@@ -170,12 +170,18 @@ run_powershell() {
 
 elevate() {
     [ "$(id -u 2>/dev/null)" = 0 ] && return 0
-    [ "$CT_ELEVATE" = 1 ] || die 1 "root privileges are required; re-run as root or through sudo"
-    command -v sudo >/dev/null 2>&1 || die 1 "root privileges are required and sudo is not installed"
+    # A dry run only prints the command it would run, so it never needs root -
+    # regardless of --no-elevate. This check must come before the others.
     if [ "$CT_DRY_RUN" = 1 ]; then
-        say "not root: a real run re-executes through sudo"
+        if [ "$CT_ELEVATE" = 1 ]; then
+            say "not root: a real run re-executes through sudo"
+        else
+            say "not root: a real run would require root (--no-elevate is set)"
+        fi
         return 0
     fi
+    [ "$CT_ELEVATE" = 1 ] || die 1 "root privileges are required; re-run as root or through sudo"
+    command -v sudo >/dev/null 2>&1 || die 1 "root privileges are required and sudo is not installed"
     say "root privileges are required; re-running through sudo"
     eval "exec sudo -- /bin/sh $(q "$CT_HOME/vestigium.sh") $CT_ORIG"
 }

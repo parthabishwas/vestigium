@@ -1,0 +1,1538 @@
+# DFIRCollector v1.0 -> v1.1 unified diff
+# Generated for review. New files (Devices/Execution/Triage) shown as additions.
+
+################################################################ DFIRCollector.ps1
+--- script/DFIRCollector.ps1	2026-07-22 09:42:50.000000000 +0000
++++ work/DFIRCollector.ps1	2026-07-26 06:50:50.477204344 +0000
+@@ -50,7 +50,10 @@
+         'Network.ps1',
+         'Browser.ps1',
+         'EventLogs.ps1',
+-        'Defender.ps1'
++        'Defender.ps1',
++        'Execution.ps1',
++        'Devices.ps1',
++        'Triage.ps1'
+     )
+ 
+     foreach ($moduleName in $moduleNames) {
+@@ -157,7 +160,10 @@
+             @{ Name = 'Browser';      Script = { Invoke-DFIRBrowserCollection -Context $context } },
+             @{ Name = 'EventLogs';    Script = { Invoke-DFIREventLogCollection -Context $context } },
+             @{ Name = 'Defender';     Script = { Invoke-DFIRDefenderCollection -Context $context } },
+-            @{ Name = 'YARA';         Script = { Invoke-DFIRYaraCollection -Context $context } }
++            @{ Name = 'Execution';    Script = { Invoke-DFIRExecutionCollection -Context $context } },
++            @{ Name = 'Devices';      Script = { Invoke-DFIRDeviceCollection -Context $context } },
++            @{ Name = 'YARA';         Script = { Invoke-DFIRYaraCollection -Context $context } },
++            @{ Name = 'Triage';       Script = { Invoke-DFIRTriageSummary -Context $context } }
+         )
+ 
+         $overall = $true
+
+################################################################ Modules/Utilities.ps1
+--- script/Modules/Utilities.ps1	2026-07-22 09:31:58.000000000 +0000
++++ work/Modules/Utilities.ps1	2026-07-26 06:53:49.166803057 +0000
+@@ -73,6 +73,9 @@
+         Logs           = '14_Logs'
+         Hashes         = '15_Hashes'
+         Manifest       = '16_Manifest'
++        Execution      = '17_Execution'
++        Devices        = '18_Devices'
++        Triage         = '19_Triage'
+     }
+ 
+     $paths = @{}
+@@ -420,6 +423,170 @@
+     }
+ }
+ 
++function Copy-DFIRLockedFile {
++<#
++.SYNOPSIS
++    Copies a file that may be locked by a running process.
++.DESCRIPTION
++    Copy-Item fails with "Access to the path is denied" when a process such as a
++    running browser holds an exclusive-write handle. This helper first tries a
++    normal copy, then re-opens the source with FileShare.ReadWrite so that the
++    read succeeds alongside the owning process's write handle. Falls back to
++    robocopy backup mode (/b) which uses SeBackupPrivilege when the collector is
++    elevated.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][string]$Source,
++        [Parameter(Mandatory=$true)][string]$Destination
++    )
++
++    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
++        Write-DFIRLog -Context $Context -Level WARN -Message ("Source file not found: {0}" -f $Source)
++        return $false
++    }
++
++    $parent = Split-Path -Parent $Destination
++    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
++        try { New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null }
++        catch {
++            Write-DFIRLog -Context $Context -Level ERROR -Message ("Destination create failed {0}: {1}" -f $parent, $_.Exception.Message)
++            return $false
++        }
++    }
++
++    try {
++        Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
++        Add-DFIRCollectedFile -Context $Context -Path $Destination
++        return $true
++    }
++    catch { }
++
++    $inStream = $null
++    $outStream = $null
++    try {
++        $inStream = New-Object System.IO.FileStream($Source, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
++        $outStream = New-Object System.IO.FileStream($Destination, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
++        $inStream.CopyTo($outStream)
++        $outStream.Flush()
++        Write-DFIRLog -Context $Context -Message ("Locked-file copy via shared read: {0}" -f $Source)
++        Add-DFIRCollectedFile -Context $Context -Path $Destination
++        return $true
++    }
++    catch { }
++    finally {
++        if ($outStream) { $outStream.Dispose() }
++        if ($inStream) { $inStream.Dispose() }
++    }
++
++    try {
++        $srcDir = Split-Path -Parent $Source
++        $srcName = Split-Path -Leaf $Source
++        $dstDir = Split-Path -Parent $Destination
++        & robocopy.exe $srcDir $dstDir $srcName /b /r:0 /w:0 /nfl /ndl /njh /njs /nc /ns /np 2>&1 | Out-Null
++        $landed = Join-Path $dstDir $srcName
++        if (Test-Path -LiteralPath $landed -PathType Leaf) {
++            if ($landed -ne $Destination) { Move-Item -LiteralPath $landed -Destination $Destination -Force -ErrorAction Stop }
++            Write-DFIRLog -Context $Context -Message ("Locked-file copy via robocopy backup mode: {0}" -f $Source)
++            Add-DFIRCollectedFile -Context $Context -Path $Destination
++            return $true
++        }
++    }
++    catch { }
++
++    Write-DFIRLog -Context $Context -Level WARN -Message ("Locked-file copy failed after all fallbacks: {0}" -f $Source)
++    return $false
++}
++
++function Export-DFIRBinaryStrings {
++<#
++.SYNOPSIS
++    Carves printable ASCII and UTF-16LE strings from a binary file.
++.DESCRIPTION
++    Vendor security products such as ESET store detection history in proprietary
++    binary .dat files. Carving both encodings makes detection names and file
++    paths readable to the analyst without a vendor parser.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][string]$Source,
++        [Parameter(Mandatory=$true)][string]$Destination,
++        [int]$MinimumLength = 5
++    )
++
++    try {
++        if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) { return $false }
++        $bytes = [System.IO.File]::ReadAllBytes($Source)
++        if ($bytes.Length -eq 0) { return $false }
++
++        $parent = Split-Path -Parent $Destination
++        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
++            New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null
++        }
++
++        $pattern = '[\x20-\x7E]{' + $MinimumLength + ',}'
++        $results = New-Object System.Collections.ArrayList
++
++        # UTF-16LE strings are not guaranteed to begin on an even byte offset
++        # inside a proprietary container. Decoding only at offset 0 silently
++        # drops every string that starts at an odd offset, so decode at both
++        # alignments. Verified against ESET virlog.dat, where the detection name
++        # begins at offset 1579.
++        $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
++        foreach ($m in [regex]::Matches($ascii, $pattern)) { [void]$results.Add($m.Value) }
++
++        foreach ($offset in 0, 1) {
++            if ($bytes.Length -le $offset) { continue }
++            $length = $bytes.Length - $offset
++            if ($length % 2 -ne 0) { $length-- }
++            if ($length -lt 2) { continue }
++            $wide = [System.Text.Encoding]::Unicode.GetString($bytes, $offset, $length)
++            foreach ($m in [regex]::Matches($wide, $pattern)) { [void]$results.Add($m.Value) }
++        }
++
++        $unique = $results | Select-Object -Unique
++        if (-not $unique) { return $false }
++
++        $header = @(
++            ("Source: {0}" -f $Source),
++            ("Carved: ASCII and UTF-16LE, minimum length {0}" -f $MinimumLength),
++            '---'
++        )
++        ($header + $unique) | Out-File -FilePath $Destination -Encoding UTF8 -Width 4096
++        Add-DFIRCollectedFile -Context $Context -Path $Destination
++        return $true
++    }
++    catch {
++        Write-DFIRLog -Context $Context -Level WARN -Message ("String carve failed for {0}: {1}" -f $Source, $_.Exception.Message)
++        return $false
++    }
++}
++
++function Test-DFIRPathUnder {
++<#
++.SYNOPSIS
++    Tests whether a candidate path sits inside a parent path.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Candidate,
++        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Parent
++    )
++
++    if ([string]::IsNullOrWhiteSpace($Candidate) -or [string]::IsNullOrWhiteSpace($Parent)) { return $false }
++    $c = $Candidate.TrimEnd('\') + '\'
++    $p = $Parent.TrimEnd('\') + '\'
++    return $c.StartsWith($p, [System.StringComparison]::OrdinalIgnoreCase)
++}
++
+ function Export-DFIRRegistryKey {
+ <#
+ .SYNOPSIS
+
+################################################################ Modules/Autoruns.ps1
+--- script/Modules/Autoruns.ps1	2026-07-22 07:57:17.000000000 +0000
++++ work/Modules/Autoruns.ps1	2026-07-26 06:45:11.688182758 +0000
+@@ -18,8 +18,51 @@
+         return $true
+     }
+ 
++    # -s verifies Authenticode signatures, -h emits file hashes, -t normalises
++    # timestamps to UTC. Without -s the Signer column is empty and autostart
++    # entries can only be judged by publisher strings, which an attacker controls.
+     $csv = Join-Path $Context.Paths.Autoruns 'Autoruns.csv'
+-    $success = Invoke-DFIRSafeCommand -Context $Context -Name 'Autorunsc64' -FilePath $tool -Arguments @('-accepteula','-a','*','-c') -OutputPath $csv
++    $success = Invoke-DFIRSafeCommand -Context $Context -Name 'Autorunsc64' -FilePath $tool -Arguments @('-accepteula','-nobanner','-a','*','-c','-s','-h','-t') -OutputPath $csv
++
++    $success = (Export-DFIRWmiPersistence -Context $Context) -and $success
+     Add-DFIRResult -Context $Context -Name 'Autoruns' -Success $success
+     return $success
+ }
++
++function Export-DFIRWmiPersistence {
++<#
++.SYNOPSIS
++    Exports WMI event-subscription persistence from the root\subscription namespace.
++.DESCRIPTION
++    __EventFilter, __EventConsumer and __FilterToConsumerBinding form a fileless
++    persistence mechanism that Autoruns does not enumerate. A binding that joins
++    a filter to a CommandLineEventConsumer or ActiveScriptEventConsumer is the
++    artifact of interest.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $success = $true
++
++    $success = (Export-DFIRJson -Context $Context -Name 'WMI __EventFilter' -Depth 4 `
++        -Path (Join-Path $Context.Paths.Autoruns 'WMI_EventFilter.json') -ScriptBlock {
++            Get-CimInstance -Namespace 'root\subscription' -ClassName '__EventFilter' -ErrorAction SilentlyContinue |
++                Select-Object -Property * -ExcludeProperty CimClass, CimInstanceProperties, CimSystemProperties
++        }) -and $success
++
++    $success = (Export-DFIRJson -Context $Context -Name 'WMI __EventConsumer' -Depth 4 `
++        -Path (Join-Path $Context.Paths.Autoruns 'WMI_EventConsumer.json') -ScriptBlock {
++            Get-CimInstance -Namespace 'root\subscription' -ClassName '__EventConsumer' -ErrorAction SilentlyContinue |
++                Select-Object -Property * -ExcludeProperty CimClass, CimInstanceProperties, CimSystemProperties
++        }) -and $success
++
++    $success = (Export-DFIRJson -Context $Context -Name 'WMI __FilterToConsumerBinding' -Depth 4 `
++        -Path (Join-Path $Context.Paths.Autoruns 'WMI_FilterToConsumerBinding.json') -ScriptBlock {
++            Get-CimInstance -Namespace 'root\subscription' -ClassName '__FilterToConsumerBinding' -ErrorAction SilentlyContinue |
++                Select-Object -Property * -ExcludeProperty CimClass, CimInstanceProperties, CimSystemProperties
++        }) -and $success
++
++    return $success
++}
+
+################################################################ Modules/System.ps1
+--- script/Modules/System.ps1	2026-07-22 09:50:07.000000000 +0000
++++ work/Modules/System.ps1	2026-07-26 06:46:08.947043051 +0000
+@@ -127,12 +127,61 @@
+     $success = (Export-DFIRCsv -Context $Context -Name 'Get-ScheduledTask CSV' -Path (Join-Path $Context.Paths.ScheduledTasks 'Get-ScheduledTask.csv') -ScriptBlock {
+         Get-ScheduledTask -ErrorAction SilentlyContinue | Select-Object TaskName, TaskPath, State, Author, Date, Description, URI
+     }) -and $success
++    # Raw task XML carries the registration timestamp, author SID and exact
++    # command line. schtasks /v omits the registration date, which is what pins
++    # when an unauthorised task was created.
++    $success = (Invoke-DFIRSafeCommand -Context $Context -Name 'schtasks query XML' -FilePath 'schtasks.exe' -Arguments @('/query','/xml','ONE') -OutputPath (Join-Path $Context.Paths.ScheduledTasks 'schtasks_ALL.xml')) -and $success
++    $success = (Copy-DFIRScheduledTaskDefinitions -Context $Context) -and $success
++
+     $success = (Save-DFIRText -Context $Context -Name 'Get-ScheduledTask TXT' -Path (Join-Path $Context.Paths.ScheduledTasks 'Get-ScheduledTask.txt') -ScriptBlock {
+         Get-ScheduledTask -ErrorAction SilentlyContinue | Format-List *
+     }) -and $success
+     return $success
+ }
+ 
++function Copy-DFIRScheduledTaskDefinitions {
++<#
++.SYNOPSIS
++    Copies the on-disk scheduled task definition files from C:\Windows\System32\Tasks.
++.DESCRIPTION
++    Each file is the task's raw XML including RegistrationInfo\Date and the
++    author SID. Non-Microsoft tasks are prioritised so the copy stays small.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $tasksRoot = Join-Path $env:SystemRoot 'System32\Tasks'
++    if (-not (Test-Path -LiteralPath $tasksRoot -PathType Container)) {
++        Write-DFIRLog -Context $Context -Level WARN -Message 'Scheduled task definitions skipped: System32\Tasks not found'
++        return $true
++    }
++
++    $dest = Join-Path $Context.Paths.ScheduledTasks 'TaskDefinitions'
++    try { New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null }
++    catch {
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("Task definition folder create failed: {0}" -f $_.Exception.Message)
++        return $false
++    }
++
++    $success = $true
++    try {
++        Get-ChildItem -LiteralPath $tasksRoot -File -Recurse -ErrorAction SilentlyContinue |
++            Where-Object { $_.FullName -notmatch '\\Tasks\\Microsoft\\Windows\\' } |
++            ForEach-Object {
++                $relative = $_.FullName.Substring($tasksRoot.Length).TrimStart('\')
++                $safeName = Get-DFIRSafeFileName -Value $relative
++                Copy-DFIRLockedFile -Context $Context -Source $_.FullName -Destination (Join-Path $dest ($safeName + '.xml')) | Out-Null
++            }
++    }
++    catch {
++        $success = $false
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("Task definition copy failed: {0}" -f $_.Exception.Message)
++    }
++    return $success
++}
++
+ function Export-DFIRSystemInformation {
+ <#
+ .SYNOPSIS
+@@ -199,6 +248,17 @@
+     )
+     $targets = if ($Context.ContainsKey('YaraQuickScan') -and $Context['YaraQuickScan']) { $quickTargets } else { $fullTargets }
+     $targets = $targets | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
++
++    # The toolkit ships a YARA rule corpus that embeds malware strings and test
++    # samples. If the collector is run from inside a scanned profile, YARA scans
++    # its own rules and reports a match for every malware-family rule name. Warn
++    # loudly and record the root so matches inside it can be suppressed.
++    $toolkitRoot = $Context.ScriptRoot
++    foreach ($target in $targets) {
++        if (Test-DFIRPathUnder -Candidate $toolkitRoot -Parent $target) {
++            Write-DFIRLog -Context $Context -Level WARN -Message ("Collector root {0} is inside YARA target {1}; self-matches will be suppressed. Prefer running from removable media or a path outside C:\Users." -f $toolkitRoot, $target)
++        }
++    }
+     $threads = 1
+     if ($Context.ContainsKey('YaraThreads') -and $Context['YaraThreads']) {
+         $threads = [int]$Context['YaraThreads']
+@@ -210,10 +270,12 @@
+         "Rules: $activeRules" | Add-Content -Path $out -Encoding UTF8
+         "Mode: $(if ($Context.ContainsKey('YaraQuickScan') -and $Context['YaraQuickScan']) { 'Quick' } else { 'Full' })" | Add-Content -Path $out -Encoding UTF8
+         "Threads: $threads" | Add-Content -Path $out -Encoding UTF8
++        "Toolkit-Root: $toolkitRoot" | Add-Content -Path $out -Encoding UTF8
++        "Note: matches whose path is inside Toolkit-Root are suppressed (scanner self-match)." | Add-Content -Path $out -Encoding UTF8
+         foreach ($target in $targets) {
+             Write-DFIRLog -Context $Context -Message ("YARA scanning target: {0}" -f $target)
+             "Target: $target" | Add-Content -Path $out -Encoding UTF8
+-            Invoke-DFIRYaraProcess -Context $Context -YaraPath $yara -RulesPath $activeRules -TargetPath $target -OutputPath $out -Threads $threads
++            Invoke-DFIRYaraProcess -Context $Context -YaraPath $yara -RulesPath $activeRules -TargetPath $target -OutputPath $out -Threads $threads -ExcludeRoot $toolkitRoot
+         }
+         Add-DFIRCollectedFile -Context $Context -Path $out
+         Write-DFIRLog -Context $Context -Level SUCCESS -Message ("YARA scan finished. Results={0}" -f $out)
+@@ -239,7 +301,8 @@
+         [Parameter(Mandatory=$true)][string]$RulesPath,
+         [Parameter(Mandatory=$true)][string]$TargetPath,
+         [Parameter(Mandatory=$true)][string]$OutputPath,
+-        [Parameter(Mandatory=$true)][int]$Threads
++        [Parameter(Mandatory=$true)][int]$Threads,
++        [string]$ExcludeRoot = ''
+     )
+ 
+     $stdout = Join-Path $env:TEMP ("DFIRCollector_Yara_{0}_stdout.tmp" -f ([guid]::NewGuid().ToString('N')))
+@@ -255,12 +318,24 @@
+         if (Test-Path -LiteralPath $stdout) { $stdoutLines = @(Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue) }
+         if (Test-Path -LiteralPath $stderr) { $stderrLines = @(Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue) }
+ 
++        $suppressed = 0
++        if ($stdoutLines.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($ExcludeRoot)) {
++            $before = $stdoutLines.Count
++            $escaped = [regex]::Escape($ExcludeRoot.TrimEnd('\'))
++            $stdoutLines = @($stdoutLines | Where-Object { $_ -notmatch $escaped })
++            $suppressed = $before - $stdoutLines.Count
++        }
++
+         if ($stdoutLines.Count -gt 0) {
+             $stdoutLines | Add-Content -Path $OutputPath -Encoding UTF8
+         }
+         else {
+             "No YARA matches for: $TargetPath" | Add-Content -Path $OutputPath -Encoding UTF8
+         }
++        if ($suppressed -gt 0) {
++            "Suppressed-Self-Matches: $suppressed (paths inside $ExcludeRoot)" | Add-Content -Path $OutputPath -Encoding UTF8
++            Write-DFIRLog -Context $Context -Message ("Suppressed {0} YARA self-match lines under {1}" -f $suppressed, $ExcludeRoot)
++        }
+         if ($stderrLines.Count -gt 0) { $stderrLines | Add-Content -Path $OutputPath -Encoding UTF8 }
+         "ExitCode: $($process.ExitCode)" | Add-Content -Path $OutputPath -Encoding UTF8
+         if ($process.ExitCode -gt 1) {
+
+################################################################ Modules/Defender.ps1
+--- script/Modules/Defender.ps1	2026-07-22 07:58:54.000000000 +0000
++++ work/Modules/Defender.ps1	2026-07-26 06:46:59.268794613 +0000
+@@ -14,22 +14,103 @@
+     $success = $true
+     $success = (Export-DFIRCsv -Context $Context -Name 'Get-MpComputerStatus' -Path (Join-Path $Context.Paths.Defender 'MpComputerStatus.csv') -ScriptBlock { Get-MpComputerStatus -ErrorAction SilentlyContinue }) -and $success
+     $success = (Export-DFIRCsv -Context $Context -Name 'Get-MpThreatDetection' -Path (Join-Path $Context.Paths.Defender 'MpThreatDetection.csv') -ScriptBlock { Get-MpThreatDetection -ErrorAction SilentlyContinue }) -and $success
+-    $success = (Export-DFIRCsv -Context $Context -Name 'Get-MpPreference' -Path (Join-Path $Context.Paths.Defender 'MpPreference.csv') -ScriptBlock { Get-MpPreference -ErrorAction SilentlyContinue }) -and $success
++    # Export-Csv renders array properties such as ExclusionPath as the literal
++    # "System.String[]", and Get-MpPreference throws outright when WinDefend is
++    # stopped because a third-party AV owns Security Center. JSON preserves the
++    # arrays and the registry fallback covers the stopped-service case.
++    $success = (Export-DFIRJson -Context $Context -Name 'Get-MpPreference' -Depth 4 -Path (Join-Path $Context.Paths.Defender 'MpPreference.json') -ScriptBlock {
++        Get-MpPreference -ErrorAction SilentlyContinue
++    }) -and $success
++    $success = (Export-DFIRDefenderExclusionRegistry -Context $Context) -and $success
++
+     $success = (Copy-DFIRSecurityProductLogs -Context $Context -ProductName 'Malwarebytes' -CandidatePaths @(
+         (Join-Path $env:ProgramData 'Malwarebytes\MBAMService\ScanResults'),
++        (Join-Path $env:ProgramData 'Malwarebytes\MBAMService\logs'),
+         (Join-Path $env:ProgramData 'Malwarebytes\MBAMService\Logs'),
+-        (Join-Path $env:ProgramData 'Malwarebytes\Endpoint Agent\Logs')
+-    )) -and $success
++        (Join-Path $env:ProgramData 'Malwarebytes\Malwarebytes Anti-Malware\Logs'),
++        (Join-Path $env:ProgramData 'Malwarebytes\Endpoint Agent\Logs'),
++        (Join-Path $env:ProgramData 'Malwarebytes\Endpoint Agent\Plugins'),
++        (Join-Path $env:ProgramData 'MBAMService\logs')
++    ) -ProductNamePattern 'Malwarebytes') -and $success
++
+     $success = (Copy-DFIRSecurityProductLogs -Context $Context -ProductName 'ESET' -CandidatePaths @(
+         (Join-Path $env:ProgramData 'ESET\ESET Security\Logs'),
+         (Join-Path $env:ProgramData 'ESET\ESET Endpoint Security\Logs'),
+-        (Join-Path $env:ProgramData 'ESET\ESET NOD32 Antivirus\Logs')
+-    )) -and $success
++        (Join-Path $env:ProgramData 'ESET\ESET NOD32 Antivirus\Logs'),
++        (Join-Path $env:ProgramData 'ESET\ESET Smart Security\Logs')
++    ) -ProductNamePattern 'ESET' -CarveStrings) -and $success
++
++    $success = (Export-DFIRInstalledSecurityProducts -Context $Context) -and $success
+ 
+     Add-DFIRResult -Context $Context -Name 'Defender' -Success $success
+     return $success
+ }
+ 
++function Export-DFIRDefenderExclusionRegistry {
++<#
++.SYNOPSIS
++    Reads Microsoft Defender exclusions and tamper-protection state from the registry.
++.DESCRIPTION
++    Provides coverage when the Defender service is stopped and Get-MpPreference
++    is unavailable. Exclusion paths are a common persistence hiding place, so a
++    silent gap here is a meaningful blind spot.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $keys = @(
++        'HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions',
++        'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions',
++        'HKLM\SOFTWARE\Microsoft\Windows Defender\Features',
++        'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender'
++    )
++
++    $success = $true
++    foreach ($key in $keys) {
++        $safe = Get-DFIRSafeFileName -Value ($key -replace '^HKLM\\SOFTWARE\\', '')
++        $txt = Join-Path $Context.Paths.Defender ('Registry_' + $safe + '.txt')
++        $reg = Join-Path $Context.Paths.Defender ('Registry_' + $safe + '.reg')
++        $success = (Export-DFIRRegistryKey -Context $Context -RegistryPath $key -RegExePath $reg -TxtPath $txt) -and $success
++    }
++    return $success
++}
++
++function Export-DFIRInstalledSecurityProducts {
++<#
++.SYNOPSIS
++    Records registered antivirus products and installed security software.
++.DESCRIPTION
++    Lets the analyst distinguish "product not installed" from "installed but
++    logs not found" when a vendor log path is missing.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $success = $true
++    $success = (Export-DFIRJson -Context $Context -Name 'SecurityCenter AntiVirusProduct' -Depth 3 `
++        -Path (Join-Path $Context.Paths.Defender 'SecurityCenter_Products.json') -ScriptBlock {
++            Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'AntiVirusProduct' -ErrorAction SilentlyContinue |
++                Select-Object displayName, productState, pathToSignedProductExe, pathToSignedReportingExe, timestamp
++        }) -and $success
++
++    $success = (Export-DFIRCsv -Context $Context -Name 'Installed security software' `
++        -Path (Join-Path $Context.Paths.Defender 'InstalledSecuritySoftware.csv') -ScriptBlock {
++            $roots = @(
++                'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
++                'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
++            )
++            Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
++                Where-Object { $_.DisplayName -match 'Malwarebytes|ESET|Defender|Sophos|Symantec|McAfee|Kaspersky|Trend Micro|CrowdStrike|SentinelOne|Bitdefender|Avast|AVG|Norton|Webroot|Cylance|Carbon Black' } |
++                Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, InstallLocation
++        }) -and $success
++
++    return $success
++}
++
+ function Copy-DFIRSecurityProductLogs {
+ <#
+ .SYNOPSIS
+@@ -41,7 +122,9 @@
+     param(
+         [Parameter(Mandatory=$true)][hashtable]$Context,
+         [Parameter(Mandatory=$true)][string]$ProductName,
+-        [Parameter(Mandatory=$true)][string[]]$CandidatePaths
++        [Parameter(Mandatory=$true)][string[]]$CandidatePaths,
++        [string]$ProductNamePattern = '',
++        [switch]$CarveStrings
+     )
+ 
+     $found = $false
+@@ -57,7 +140,14 @@
+                 Select-Object -First 50 |
+                 ForEach-Object {
+                     $safeName = Get-DFIRSafeFileName -Value ($_.FullName.Substring($path.Length).TrimStart('\'))
+-                    Copy-DFIRFile -Context $Context -Source $_.FullName -Destination (Join-Path $dest $safeName) | Out-Null
++                    $target = Join-Path $dest $safeName
++                    $copied = Copy-DFIRLockedFile -Context $Context -Source $_.FullName -Destination $target
++                    # Vendor detection history is stored in proprietary binary
++                    # .dat files. Carving strings makes detection names and file
++                    # paths readable without a vendor parser.
++                    if ($copied -and $CarveStrings -and $_.Extension -eq '.dat') {
++                        Export-DFIRBinaryStrings -Context $Context -Source $target -Destination ($target + '.strings.txt') | Out-Null
++                    }
+                 }
+         }
+         catch {
+@@ -67,7 +157,28 @@
+     }
+ 
+     if (-not $found) {
+-        Write-DFIRLog -Context $Context -Level WARN -Message ("{0} logs skipped: known install/log paths not found" -f $ProductName)
++        # Distinguish "product absent" from "product present but logs missing";
++        # the second case is a collection gap, the first is simply a fact.
++        $installed = $false
++        if (-not [string]::IsNullOrWhiteSpace($ProductNamePattern)) {
++            try {
++                $roots = @(
++                    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
++                    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
++                )
++                $match = Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
++                    Where-Object { $_.DisplayName -and $_.DisplayName -match $ProductNamePattern }
++                if ($match) { $installed = $true }
++            }
++            catch { }
++        }
++
++        if ($installed) {
++            Write-DFIRLog -Context $Context -Level WARN -Message ("{0} is INSTALLED but no log path was found. Evidence gap: scan history unavailable." -f $ProductName)
++        }
++        else {
++            Write-DFIRLog -Context $Context -Level INFO -Message ("{0} logs skipped: product does not appear to be installed on this host." -f $ProductName)
++        }
+     }
+     return $success
+ }
+
+################################################################ Modules/Browser.ps1
+--- script/Modules/Browser.ps1	2026-07-22 09:30:30.000000000 +0000
++++ work/Modules/Browser.ps1	2026-07-26 06:47:54.144609911 +0000
+@@ -10,17 +10,163 @@
+     [CmdletBinding()]
+     param([Parameter(Mandatory=$true)][hashtable]$Context)
+ 
+-    Write-DFIRLog -Context $Context -Message 'Starting browser extension collection'
++    Write-DFIRLog -Context $Context -Message 'Starting browser artifact collection'
+     $success = $true
+     foreach ($userRoot in (Get-DFIRBrowserUserRoots -Context $Context)) {
+         $success = (Export-DFIRChromiumExtensions -Context $Context -BrowserName 'Chrome' -UserName $userRoot.UserName -UserDataRoot (Join-Path $userRoot.LocalAppData 'Google\Chrome\User Data')) -and $success
+         $success = (Export-DFIRChromiumExtensions -Context $Context -BrowserName 'Edge' -UserName $userRoot.UserName -UserDataRoot (Join-Path $userRoot.LocalAppData 'Microsoft\Edge\User Data')) -and $success
+         $success = (Export-DFIRFirefoxExtensions -Context $Context -UserName $userRoot.UserName -ProfilesRoot (Join-Path $userRoot.AppData 'Mozilla\Firefox\Profiles')) -and $success
++
++        $success = (Export-DFIRChromiumProfileArtifacts -Context $Context -BrowserName 'Chrome' -UserName $userRoot.UserName -UserDataRoot (Join-Path $userRoot.LocalAppData 'Google\Chrome\User Data')) -and $success
++        $success = (Export-DFIRChromiumProfileArtifacts -Context $Context -BrowserName 'Edge' -UserName $userRoot.UserName -UserDataRoot (Join-Path $userRoot.LocalAppData 'Microsoft\Edge\User Data')) -and $success
++        $success = (Export-DFIRChromiumProfileArtifacts -Context $Context -BrowserName 'Brave' -UserName $userRoot.UserName -UserDataRoot (Join-Path $userRoot.LocalAppData 'BraveSoftware\Brave-Browser\User Data')) -and $success
++        $success = (Export-DFIRFirefoxProfileArtifacts -Context $Context -UserName $userRoot.UserName -ProfilesRoot (Join-Path $userRoot.AppData 'Mozilla\Firefox\Profiles')) -and $success
+     }
+     Add-DFIRResult -Context $Context -Name 'Browser' -Success $success
+     return $success
+ }
+ 
++function Read-DFIRSharedText {
++<#
++.SYNOPSIS
++    Reads a text file that may be write-locked by a running process.
++.OUTPUTS
++    System.String
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][string]$Path)
++
++    try { return (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop) } catch { }
++
++    $stream = $null
++    $reader = $null
++    try {
++        $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
++        $reader = New-Object System.IO.StreamReader($stream)
++        return $reader.ReadToEnd()
++    }
++    catch { return $null }
++    finally {
++        if ($reader) { $reader.Dispose() }
++        if ($stream) { $stream.Dispose() }
++    }
++}
++
++function Export-DFIRChromiumProfileArtifacts {
++<#
++.SYNOPSIS
++    Copies Chromium profile artifacts relevant to credential-exposure investigations.
++.DESCRIPTION
++    Collects the authoritative extension registry (Preferences and Secure
++    Preferences, which also record force-installed extensions and install
++    source), plus the browsing, autofill, credential-store and cookie
++    databases. Values inside Login Data and Cookies remain DPAPI-encrypted;
++    their presence, timestamps and row counts are what answer whether a stealer
++    touched the credential store.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][string]$BrowserName,
++        [Parameter(Mandatory=$true)][string]$UserName,
++        [Parameter(Mandatory=$true)][string]$UserDataRoot
++    )
++
++    if (-not (Test-Path -LiteralPath $UserDataRoot -PathType Container)) { return $true }
++
++    $artifacts = @(
++        'Preferences',
++        'Secure Preferences',
++        'History',
++        'Web Data',
++        'Login Data',
++        'Login Data For Account',
++        'Shortcuts',
++        'Top Sites',
++        'Favicons',
++        'Network\Cookies',
++        'Network\Trust Tokens'
++    )
++
++    $success = $true
++    try {
++        $rootDest = Join-Path $Context.Paths.Browser (Join-Path ($BrowserName + '_ProfileData') (Get-DFIRSafeFileName -Value $UserName))
++
++        Copy-DFIRLockedFile -Context $Context -Source (Join-Path $UserDataRoot 'Local State') -Destination (Join-Path $rootDest 'Local State') | Out-Null
++
++        $profiles = Get-ChildItem -LiteralPath $UserDataRoot -Directory -ErrorAction SilentlyContinue |
++            Where-Object { $_.Name -eq 'Default' -or $_.Name -like 'Profile *' -or $_.Name -eq 'Guest Profile' }
++
++        foreach ($profile in $profiles) {
++            $destDir = Join-Path $rootDest (Get-DFIRSafeFileName -Value $profile.Name)
++            New-Item -ItemType Directory -Path $destDir -Force -ErrorAction Stop | Out-Null
++            foreach ($artifact in $artifacts) {
++                $source = Join-Path $profile.FullName $artifact
++                if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
++                $safeName = Get-DFIRSafeFileName -Value $artifact
++                Copy-DFIRLockedFile -Context $Context -Source $source -Destination (Join-Path $destDir $safeName) | Out-Null
++            }
++        }
++    }
++    catch {
++        $success = $false
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("{0} profile artifact collection failed for {1}: {2}" -f $BrowserName, $UserName, $_.Exception.Message)
++    }
++    return $success
++}
++
++function Export-DFIRFirefoxProfileArtifacts {
++<#
++.SYNOPSIS
++    Copies Firefox profile artifacts relevant to credential-exposure investigations.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][string]$UserName,
++        [Parameter(Mandatory=$true)][string]$ProfilesRoot
++    )
++
++    if (-not (Test-Path -LiteralPath $ProfilesRoot -PathType Container)) { return $true }
++
++    $artifacts = @(
++        'logins.json',
++        'key4.db',
++        'places.sqlite',
++        'cookies.sqlite',
++        'formhistory.sqlite',
++        'permissions.sqlite',
++        'prefs.js',
++        'addons.json',
++        'extension-preferences.json',
++        'extension-settings.json',
++        'search.json.mozlz4'
++    )
++
++    $success = $true
++    try {
++        $rootDest = Join-Path $Context.Paths.Browser (Join-Path 'Firefox_ProfileData' (Get-DFIRSafeFileName -Value $UserName))
++        foreach ($profile in (Get-ChildItem -LiteralPath $ProfilesRoot -Directory -ErrorAction SilentlyContinue)) {
++            $destDir = Join-Path $rootDest (Get-DFIRSafeFileName -Value $profile.Name)
++            New-Item -ItemType Directory -Path $destDir -Force -ErrorAction Stop | Out-Null
++            foreach ($artifact in $artifacts) {
++                $source = Join-Path $profile.FullName $artifact
++                if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
++                Copy-DFIRLockedFile -Context $Context -Source $source -Destination (Join-Path $destDir $artifact) | Out-Null
++            }
++        }
++    }
++    catch {
++        $success = $false
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("Firefox profile artifact collection failed for {0}: {1}" -f $UserName, $_.Exception.Message)
++    }
++    return $success
++}
++
+ function Get-DFIRBrowserUserRoots {
+ <#
+ .SYNOPSIS
+@@ -69,17 +215,23 @@
+                 foreach ($version in (Get-ChildItem -LiteralPath $extension.FullName -Directory -ErrorAction SilentlyContinue)) {
+                     $manifestPath = Join-Path $version.FullName 'manifest.json'
+                     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { continue }
++                    # A running browser holds an exclusive-write handle on
++                    # manifest.json, so a plain read fails with "Access denied"
++                    # and the extension is left uninspected. Read with
++                    # FileShare.ReadWrite so the read succeeds regardless.
+                     $manifest = $null
+-                    try {
+-                        $manifest = Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
++                    $manifestRaw = Read-DFIRSharedText -Path $manifestPath
++                    if ($manifestRaw) {
++                        try { $manifest = $manifestRaw | ConvertFrom-Json -ErrorAction Stop }
++                        catch { Write-DFIRLog -Context $Context -Level WARN -Message ("Unable to parse manifest {0}: {1}" -f $manifestPath, $_.Exception.Message) }
+                     }
+-                    catch {
+-                        Write-DFIRLog -Context $Context -Level WARN -Message ("Unable to parse manifest {0}: {1}" -f $manifestPath, $_.Exception.Message)
++                    else {
++                        Write-DFIRLog -Context $Context -Level WARN -Message ("Unable to read manifest {0}" -f $manifestPath)
+                     }
+ 
+                     $destDir = Join-Path $Context.Paths.Browser (Join-Path $BrowserName (Join-Path $UserName (Join-Path $profile.Name (Join-Path $extension.Name $version.Name))))
+                     New-Item -ItemType Directory -Path $destDir -Force -ErrorAction Stop | Out-Null
+-                    Copy-DFIRFile -Context $Context -Source $manifestPath -Destination (Join-Path $destDir 'manifest.json') | Out-Null
++                    Copy-DFIRLockedFile -Context $Context -Source $manifestPath -Destination (Join-Path $destDir 'manifest.json') | Out-Null
+                     $manifestName = Get-DFIRObjectProperty -InputObject $manifest -Name 'name'
+                     $manifestDescription = Get-DFIRObjectProperty -InputObject $manifest -Name 'description'
+                     $manifestPermissions = Get-DFIRObjectProperty -InputObject $manifest -Name 'permissions'
+
+################################################################ Modules/EventLogs.ps1
+--- script/Modules/EventLogs.ps1	2026-07-22 08:39:08.000000000 +0000
++++ work/Modules/EventLogs.ps1	2026-07-26 06:48:29.914139149 +0000
+@@ -20,13 +20,50 @@
+         PowerShell     = 'Windows PowerShell'
+         PowerShellCore = 'Microsoft-Windows-PowerShell/Operational'
+         TaskScheduler  = 'Microsoft-Windows-TaskScheduler/Operational'
++        # RDP session history: answers "was this box actually accessed remotely"
++        # rather than only "is 3389 listening".
++        TSLocalSession = 'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational'
++        TSRemoteConn   = 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'
++        RDPClient      = 'Microsoft-Windows-TerminalServices-RDPClient/Operational'
++        # Removable-media history, WMI persistence execution, and BITS transfers.
++        DriverFrameworks = 'Microsoft-Windows-DriverFrameworks-UserMode/Operational'
++        WMIActivity    = 'Microsoft-Windows-WMI-Activity/Operational'
++        BitsClient     = 'Microsoft-Windows-Bits-Client/Operational'
++        WindowsDefenderWHC = 'Microsoft-Windows-Windows Defender/WHC'
++        AppLockerEXE   = 'Microsoft-Windows-AppLocker/EXE and DLL'
++        AppLockerMSI   = 'Microsoft-Windows-AppLocker/MSI and Script'
++        Sysmon         = 'Microsoft-Windows-Sysmon/Operational'
++        CodeIntegrity  = 'Microsoft-Windows-CodeIntegrity/Operational'
++        SmbClientSec   = 'Microsoft-Windows-SmbClient/Security'
+     }
+ 
++    # Channels such as Sysmon and AppLocker are absent unless deployed. Their
++    # absence is a fact about the estate, not a collection failure, so record it
++    # and move on rather than marking the step failed.
++    $availableChannels = @{}
++    try {
++        foreach ($channel in (& wevtutil.exe el 2>$null)) {
++            if ($channel) { $availableChannels[$channel.Trim()] = $true }
++        }
++    }
++    catch {
++        Write-DFIRLog -Context $Context -Level WARN -Message ("Channel enumeration failed; all channels will be attempted: {0}" -f $_.Exception.Message)
++    }
++
++    $missingChannels = New-Object System.Collections.ArrayList
++
+     foreach ($name in $logs.Keys) {
+         $logName = $logs[$name]
+         $safe = Get-DFIRSafeFileName -Value $name
+         $evtx = Join-Path $Context.Paths.EventLogs ($safe + '.evtx')
+         $csv = Join-Path $Context.Paths.EventLogs ($safe + '_Last500.csv')
++
++        if ($availableChannels.Count -gt 0 -and -not $availableChannels.ContainsKey($logName)) {
++            [void]$missingChannels.Add($logName)
++            Write-DFIRLog -Context $Context -Message ("Channel not present on this host, skipped: {0}" -f $logName)
++            continue
++        }
++
+         try {
+             & wevtutil.exe epl $logName $evtx 2>&1 | Out-File -FilePath ($evtx + '.export.log.txt') -Encoding UTF8 -Width 4096
+             if (Test-Path -LiteralPath $evtx) { Add-DFIRCollectedFile -Context $Context -Path $evtx }
+@@ -56,6 +93,13 @@
+         }
+     }
+ 
++    if ($missingChannels.Count -gt 0) {
++        $notPresent = Join-Path $Context.Paths.EventLogs 'ChannelsNotPresent.txt'
++        @('Channels absent on this host (not a collection failure):', '---') + $missingChannels |
++            Out-File -FilePath $notPresent -Encoding UTF8 -Width 4096
++        Add-DFIRCollectedFile -Context $Context -Path $notPresent
++    }
++
+     Add-DFIRResult -Context $Context -Name 'EventLogs' -Success $success
+     return $success
+ }
+
+################################################################ Modules/Execution.ps1 (NEW FILE)
+--- /dev/null	2026-07-26 06:36:51.603327875 +0000
++++ work/Modules/Execution.ps1	2026-07-26 06:49:03.484634386 +0000
+@@ -0,0 +1,189 @@
++Set-StrictMode -Version 2.0
++
++function Invoke-DFIRExecutionCollection {
++<#
++.SYNOPSIS
++    Collects Windows execution-history artifacts.
++.DESCRIPTION
++    Event logs roll over, and a re-imaged endpoint retains only weeks of history.
++    Prefetch, Amcache, SRUM and the PowerShell console history survive longer and
++    are frequently the only record of what ran before the retained log window.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    Write-DFIRLog -Context $Context -Message 'Starting execution-history collection'
++    $success = $true
++
++    $success = (Copy-DFIRPrefetch -Context $Context) -and $success
++    $success = (Copy-DFIRAmcache -Context $Context) -and $success
++    $success = (Copy-DFIRSrum -Context $Context) -and $success
++    $success = (Copy-DFIRPowerShellHistory -Context $Context) -and $success
++    $success = (Export-DFIRRecentFileCache -Context $Context) -and $success
++
++    Add-DFIRResult -Context $Context -Name 'Execution' -Success $success
++    return $success
++}
++
++function Copy-DFIRPrefetch {
++<#
++.SYNOPSIS
++    Copies Windows Prefetch files.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $prefetchRoot = Join-Path $env:SystemRoot 'Prefetch'
++    if (-not (Test-Path -LiteralPath $prefetchRoot -PathType Container)) {
++        Write-DFIRLog -Context $Context -Level WARN -Message 'Prefetch skipped: directory not found (may be disabled on SSD-backed images)'
++        return $true
++    }
++
++    $dest = Join-Path $Context.Paths.Execution 'Prefetch'
++    try { New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null }
++    catch {
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("Prefetch destination create failed: {0}" -f $_.Exception.Message)
++        return $false
++    }
++
++    $count = 0
++    Get-ChildItem -LiteralPath $prefetchRoot -Filter '*.pf' -File -ErrorAction SilentlyContinue |
++        ForEach-Object {
++            if (Copy-DFIRLockedFile -Context $Context -Source $_.FullName -Destination (Join-Path $dest $_.Name)) { $count++ }
++        }
++
++    # An index keeps the run-count and last-run ordering readable without a
++    # dedicated Prefetch parser.
++    $index = Join-Path $Context.Paths.Execution 'Prefetch_Listing.csv'
++    Export-DFIRCsv -Context $Context -Name 'Prefetch listing' -Path $index -ScriptBlock {
++        Get-ChildItem -LiteralPath (Join-Path $env:SystemRoot 'Prefetch') -Filter '*.pf' -File -ErrorAction SilentlyContinue |
++            Select-Object Name, Length, CreationTimeUtc, LastWriteTimeUtc
++    } | Out-Null
++
++    Write-DFIRLog -Context $Context -Message ("Prefetch files collected: {0}" -f $count)
++    return $true
++}
++
++function Copy-DFIRAmcache {
++<#
++.SYNOPSIS
++    Copies the Amcache hive and its transaction logs.
++.DESCRIPTION
++    Amcache.hve records executables present on the system with SHA-1 values and
++    first-execution evidence, and it survives far longer than the event logs.
++    The .LOG1/.LOG2 transaction logs are required for a clean replay.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $amcacheDir = Join-Path $env:SystemRoot 'AppCompat\Programs'
++    if (-not (Test-Path -LiteralPath $amcacheDir -PathType Container)) {
++        Write-DFIRLog -Context $Context -Level WARN -Message 'Amcache skipped: AppCompat\Programs not found'
++        return $true
++    }
++
++    $dest = Join-Path $Context.Paths.Execution 'Amcache'
++    try { New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null }
++    catch {
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("Amcache destination create failed: {0}" -f $_.Exception.Message)
++        return $false
++    }
++
++    foreach ($name in @('Amcache.hve', 'Amcache.hve.LOG1', 'Amcache.hve.LOG2', 'RecentFileCache.bcf')) {
++        $source = Join-Path $amcacheDir $name
++        if (Test-Path -LiteralPath $source -PathType Leaf) {
++            Copy-DFIRLockedFile -Context $Context -Source $source -Destination (Join-Path $dest $name) | Out-Null
++        }
++    }
++    return $true
++}
++
++function Copy-DFIRSrum {
++<#
++.SYNOPSIS
++    Copies the System Resource Usage Monitor database.
++.DESCRIPTION
++    SRUDB.dat records per-process network egress by application and user, which
++    supports or refutes a data-exfiltration hypothesis when no packet capture or
++    proxy log is available.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $srumDir = Join-Path $env:SystemRoot 'System32\sru'
++    if (-not (Test-Path -LiteralPath $srumDir -PathType Container)) {
++        Write-DFIRLog -Context $Context -Level WARN -Message 'SRUM skipped: System32\sru not found'
++        return $true
++    }
++
++    $dest = Join-Path $Context.Paths.Execution 'SRUM'
++    try { New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null }
++    catch {
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("SRUM destination create failed: {0}" -f $_.Exception.Message)
++        return $false
++    }
++
++    Get-ChildItem -LiteralPath $srumDir -File -ErrorAction SilentlyContinue |
++        ForEach-Object { Copy-DFIRLockedFile -Context $Context -Source $_.FullName -Destination (Join-Path $dest $_.Name) | Out-Null }
++    return $true
++}
++
++function Copy-DFIRPowerShellHistory {
++<#
++.SYNOPSIS
++    Copies the PSReadLine console history for each target profile.
++.DESCRIPTION
++    ConsoleHost_history.txt records commands typed interactively, including
++    download-and-execute one-liners, and it is not cleared when event logs roll.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $profiles = if ($Context.ContainsKey('TargetProfiles') -and $Context['TargetProfiles']) {
++        @($Context['TargetProfiles'])
++    } else {
++        @(Resolve-DFIRTargetProfiles -Context $Context)
++    }
++
++    $dest = Join-Path $Context.Paths.Execution 'PowerShellHistory'
++    try { New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null }
++    catch {
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("PowerShell history destination create failed: {0}" -f $_.Exception.Message)
++        return $false
++    }
++
++    foreach ($profile in $profiles) {
++        $historyPath = Join-Path $profile.AppData 'Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt'
++        if (-not (Test-Path -LiteralPath $historyPath -PathType Leaf)) { continue }
++        $safeName = ('{0}_ConsoleHost_history.txt' -f (Get-DFIRSafeFileName -Value $profile.UserName))
++        Copy-DFIRLockedFile -Context $Context -Source $historyPath -Destination (Join-Path $dest $safeName) | Out-Null
++    }
++    return $true
++}
++
++function Export-DFIRRecentFileCache {
++<#
++.SYNOPSIS
++    Exports the ShimCache (AppCompatCache) registry value for offline parsing.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $reg = Join-Path $Context.Paths.Execution 'AppCompatCache.reg'
++    $txt = Join-Path $Context.Paths.Execution 'AppCompatCache.txt'
++    return (Export-DFIRRegistryKey -Context $Context `
++        -RegistryPath 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache' `
++        -RegExePath $reg -TxtPath $txt)
++}
+
+################################################################ Modules/Devices.ps1 (NEW FILE)
+--- /dev/null	2026-07-26 06:36:51.603327875 +0000
++++ work/Modules/Devices.ps1	2026-07-26 06:49:41.694196457 +0000
+@@ -0,0 +1,187 @@
++Set-StrictMode -Version 2.0
++
++function Invoke-DFIRDeviceCollection {
++<#
++.SYNOPSIS
++    Collects removable-media, portable-device and volume evidence.
++.DESCRIPTION
++    Answers which external drives and phones have been attached to the endpoint
++    and what non-system volumes exist. Without this the analyst has to infer
++    removable media indirectly from driver-install events or third-party scan
++    logs, which gives no volume label, serial or mount history.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    Write-DFIRLog -Context $Context -Message 'Starting device and volume collection'
++    $success = $true
++
++    $success = (Export-DFIRUsbRegistry -Context $Context) -and $success
++    $success = (Export-DFIRVolumeInventory -Context $Context) -and $success
++    $success = (Export-DFIRUserMountPoints -Context $Context) -and $success
++
++    Add-DFIRResult -Context $Context -Name 'Devices' -Success $success
++    return $success
++}
++
++function Export-DFIRUsbRegistry {
++<#
++.SYNOPSIS
++    Exports USB, USBSTOR, portable-device and mounted-volume registry keys.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $keys = [ordered]@{
++        'USBSTOR'          = 'HKLM\SYSTEM\CurrentControlSet\Enum\USBSTOR'
++        'USB'              = 'HKLM\SYSTEM\CurrentControlSet\Enum\USB'
++        'SCSI'             = 'HKLM\SYSTEM\CurrentControlSet\Enum\SCSI'
++        'MountedDevices'   = 'HKLM\SYSTEM\MountedDevices'
++        'PortableDevices'  = 'HKLM\SOFTWARE\Microsoft\Windows Portable Devices\Devices'
++        'VolumeInfoCache'  = 'HKLM\SOFTWARE\Microsoft\Windows Search\VolumeInfoCache'
++        'DiskDevices'      = 'HKLM\SYSTEM\CurrentControlSet\Services\disk\Enum'
++    }
++
++    $success = $true
++    foreach ($name in $keys.Keys) {
++        $reg = Join-Path $Context.Paths.Devices ($name + '.reg')
++        $txt = Join-Path $Context.Paths.Devices ($name + '.txt')
++        $success = (Export-DFIRRegistryKey -Context $Context -RegistryPath $keys[$name] -RegExePath $reg -TxtPath $txt) -and $success
++    }
++    return $success
++}
++
++function Export-DFIRVolumeInventory {
++<#
++.SYNOPSIS
++    Enumerates every volume, including removable and network drives.
++.DESCRIPTION
++    Also records a shallow top-level listing of non-system fixed and removable
++    volumes so that data stores such as personal backup drives are visible in
++    the evidence rather than only inferable from other sources.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $success = $true
++
++    $success = (Export-DFIRCsv -Context $Context -Name 'Volumes' -Path (Join-Path $Context.Paths.Devices 'Volumes.csv') -ScriptBlock {
++        Get-CimInstance Win32_Volume -ErrorAction SilentlyContinue |
++            Select-Object DriveLetter, Label, FileSystem, DriveType, Capacity, FreeSpace, SerialNumber, DeviceID
++    }) -and $success
++
++    $success = (Export-DFIRCsv -Context $Context -Name 'Logical disks' -Path (Join-Path $Context.Paths.Devices 'LogicalDisks.csv') -ScriptBlock {
++        Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue |
++            Select-Object DeviceID, DriveType, FileSystem, VolumeName, VolumeSerialNumber, Size, FreeSpace, ProviderName
++    }) -and $success
++
++    $success = (Export-DFIRCsv -Context $Context -Name 'Disk drives' -Path (Join-Path $Context.Paths.Devices 'DiskDrives.csv') -ScriptBlock {
++        Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue |
++            Select-Object Model, SerialNumber, InterfaceType, MediaType, Size, PNPDeviceID
++    }) -and $success
++
++    $success = (Export-DFIRCsv -Context $Context -Name 'PnP USB devices' -Path (Join-Path $Context.Paths.Devices 'PnPUsbDevices.csv') -ScriptBlock {
++        Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue |
++            Where-Object { $_.PNPDeviceID -and ($_.PNPDeviceID -like 'USB*' -or $_.PNPDeviceID -like 'USBSTOR*' -or $_.PNPDeviceID -like 'WPDBUSENUM*') } |
++            Select-Object Name, Manufacturer, PNPDeviceID, Status, Service
++    }) -and $success
++
++    # Shallow listing only: depth 2 keeps the output small while still revealing
++    # top-level data stores on attached drives.
++    try {
++        $systemDrive = ($env:SystemDrive).TrimEnd('\')
++        $listingPath = Join-Path $Context.Paths.Devices 'NonSystemVolume_TopLevel.txt'
++        $lines = New-Object System.Collections.ArrayList
++        [void]$lines.Add('Top-level listing (depth 2) of non-system fixed and removable volumes')
++        [void]$lines.Add('---')
++
++        Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue |
++            Where-Object { ($_.DriveType -eq 2 -or $_.DriveType -eq 3) -and $_.DeviceID -and $_.DeviceID -ne $systemDrive } |
++            ForEach-Object {
++                $root = $_.DeviceID + '\'
++                [void]$lines.Add('')
++                [void]$lines.Add(("=== {0} (DriveType={1}, Label={2}) ===" -f $root, $_.DriveType, $_.VolumeName))
++                try {
++                    Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue |
++                        Select-Object -First 200 |
++                        ForEach-Object {
++                            [void]$lines.Add(("  {0}  {1}  {2}" -f $_.Mode, $_.LastWriteTimeUtc, $_.Name))
++                            if ($_.PSIsContainer) {
++                                Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue |
++                                    Select-Object -First 50 |
++                                    ForEach-Object { [void]$lines.Add(("      {0}  {1}  {2}" -f $_.Mode, $_.LastWriteTimeUtc, $_.Name)) }
++                            }
++                        }
++                }
++                catch {
++                    [void]$lines.Add(("  <listing failed: {0}>" -f $_.Exception.Message))
++                }
++            }
++
++        $lines | Out-File -FilePath $listingPath -Encoding UTF8 -Width 4096
++        Add-DFIRCollectedFile -Context $Context -Path $listingPath
++    }
++    catch {
++        $success = $false
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("Non-system volume listing failed: {0}" -f $_.Exception.Message)
++    }
++
++    return $success
++}
++
++function Export-DFIRUserMountPoints {
++<#
++.SYNOPSIS
++    Exports per-user MountPoints2, which records volumes mounted by that user.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    $reg = Join-Path $Context.Paths.Devices 'HKCU_MountPoints2.reg'
++    $txt = Join-Path $Context.Paths.Devices 'HKCU_MountPoints2.txt'
++    $success = Export-DFIRRegistryKey -Context $Context `
++        -RegistryPath 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2' `
++        -RegExePath $reg -TxtPath $txt
++
++    # Per-target-user hives are loaded and unloaded by the Registry module; read
++    # any that are already mounted under HKU rather than loading them again.
++    $profiles = if ($Context.ContainsKey('TargetProfiles') -and $Context['TargetProfiles']) {
++        @($Context['TargetProfiles'])
++    } else {
++        @()
++    }
++
++    foreach ($profile in $profiles) {
++        try {
++            $sid = $null
++            try {
++                $account = New-Object System.Security.Principal.NTAccount($profile.UserName)
++                $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
++            }
++            catch { continue }
++            if (-not $sid) { continue }
++
++            $hkuPath = ('HKU\{0}\Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2' -f $sid)
++            $probe = & reg.exe query $hkuPath 2>&1
++            if ($LASTEXITCODE -ne 0) { continue }
++
++            $safe = Get-DFIRSafeFileName -Value $profile.UserName
++            $userReg = Join-Path $Context.Paths.Devices ('MountPoints2_' + $safe + '.reg')
++            $userTxt = Join-Path $Context.Paths.Devices ('MountPoints2_' + $safe + '.txt')
++            Export-DFIRRegistryKey -Context $Context -RegistryPath $hkuPath -RegExePath $userReg -TxtPath $userTxt | Out-Null
++        }
++        catch {
++            Write-DFIRLog -Context $Context -Level WARN -Message ("MountPoints2 export failed for {0}: {1}" -f $profile.UserName, $_.Exception.Message)
++        }
++    }
++
++    return $success
++}
+
+################################################################ Modules/Triage.ps1 (NEW FILE)
+--- /dev/null	2026-07-26 06:36:51.603327875 +0000
++++ work/Modules/Triage.ps1	2026-07-26 06:54:36.738490954 +0000
+@@ -0,0 +1,304 @@
++Set-StrictMode -Version 2.0
++
++function Invoke-DFIRTriageSummary {
++<#
++.SYNOPSIS
++    Generates 19_Triage\Findings.md, a first-pass triage summary of the collection.
++.DESCRIPTION
++    A collection produces roughly 200 files per host. This step surfaces the
++    handful of items an analyst would normally look for first. Every entry is an
++    observation requiring confirmation, not a verdict, and the file explicitly
++    says so. It never suppresses evidence; the underlying artifacts remain
++    authoritative.
++.OUTPUTS
++    System.Boolean
++#>
++    [CmdletBinding()]
++    param([Parameter(Mandatory=$true)][hashtable]$Context)
++
++    Write-DFIRLog -Context $Context -Message 'Generating triage summary'
++    $lines = New-Object System.Collections.ArrayList
++
++    [void]$lines.Add('# DFIRCollector Triage Summary')
++    [void]$lines.Add('')
++    [void]$lines.Add(('- Host: {0}' -f $env:COMPUTERNAME))
++    [void]$lines.Add(('- Collected: {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')))
++    [void]$lines.Add(('- Collector version: {0}' -f $Context.CollectorVersion))
++    [void]$lines.Add(('- Collector root: {0}' -f $Context.ScriptRoot))
++    [void]$lines.Add('')
++    [void]$lines.Add('> These are automated observations to prioritise review, not conclusions.')
++    [void]$lines.Add('> Every item must be confirmed against the underlying artifacts before it is reported.')
++    [void]$lines.Add('')
++
++    Add-DFIRTriageAvDetections -Context $Context -Lines $lines
++    Add-DFIRTriageAutoruns -Context $Context -Lines $lines
++    Add-DFIRTriageListeners -Context $Context -Lines $lines
++    Add-DFIRTriageRemoteAccess -Context $Context -Lines $lines
++    Add-DFIRTriageTasks -Context $Context -Lines $lines
++    Add-DFIRTriageCollectionGaps -Context $Context -Lines $lines
++
++    $path = Join-Path $Context.Paths.Triage 'Findings.md'
++    try {
++        $lines | Out-File -FilePath $path -Encoding UTF8 -Width 4096
++        Add-DFIRCollectedFile -Context $Context -Path $path
++        Add-DFIRResult -Context $Context -Name 'Triage' -Success $true
++        return $true
++    }
++    catch {
++        Write-DFIRLog -Context $Context -Level ERROR -Message ("Triage summary failed: {0}" -f $_.Exception.Message)
++        Add-DFIRResult -Context $Context -Name 'Triage' -Success $false -Message $_.Exception.Message
++        return $false
++    }
++}
++
++function Add-DFIRTriageAvDetections {
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.ArrayList]$Lines
++    )
++
++    [void]$Lines.Add('## Antivirus detections')
++    [void]$Lines.Add('')
++    $hits = New-Object System.Collections.ArrayList
++
++    # ESET stores detection history in binary .dat files; the carved companion
++    # text is what makes detection names greppable.
++    $esetDir = Join-Path $Context.Paths.Defender 'ESET'
++    if (Test-Path -LiteralPath $esetDir) {
++        Get-ChildItem -LiteralPath $esetDir -Filter '*.strings.txt' -File -Recurse -ErrorAction SilentlyContinue |
++            ForEach-Object {
++                $sourceName = $_.Name
++                Get-Content -LiteralPath $_.FullName -ErrorAction SilentlyContinue |
++                    Where-Object { $_ -match '^@[A-Za-z]' -and $_.Length -gt 8 } |
++                    Select-Object -Unique |
++                    ForEach-Object { [void]$hits.Add(('ESET  {0}  (in {1})' -f $_, $sourceName)) }
++            }
++    }
++
++    $mpThreat = Join-Path $Context.Paths.Defender 'MpThreatDetection.csv'
++    if (Test-Path -LiteralPath $mpThreat -PathType Leaf) {
++        try {
++            Import-Csv -LiteralPath $mpThreat -ErrorAction SilentlyContinue |
++                ForEach-Object {
++                    $name = Get-DFIRObjectProperty -InputObject $_ -Name 'ThreatID'
++                    $res = Get-DFIRObjectProperty -InputObject $_ -Name 'Resources'
++                    [void]$hits.Add(('Defender  ThreatID={0}  {1}' -f $name, $res))
++                }
++        }
++        catch { }
++    }
++
++    if ($hits.Count -eq 0) {
++        [void]$Lines.Add('No detections found in the collected ESET or Defender records.')
++        [void]$Lines.Add('Note: absence here is only as good as the vendor log retention on this host.')
++    }
++    else {
++        [void]$Lines.Add('Detection strings recovered from vendor logs. Confirm each against the raw log:')
++        [void]$Lines.Add('')
++        foreach ($hit in ($hits | Select-Object -Unique)) { [void]$Lines.Add(('- ' + $hit)) }
++    }
++    [void]$Lines.Add('')
++}
++
++function Add-DFIRTriageAutoruns {
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.ArrayList]$Lines
++    )
++
++    [void]$Lines.Add('## Autostart entries that are unsigned or run from user-writable paths')
++    [void]$Lines.Add('')
++    $csvPath = Join-Path $Context.Paths.Autoruns 'Autoruns.csv'
++    if (-not (Test-Path -LiteralPath $csvPath -PathType Leaf)) {
++        [void]$Lines.Add('Autoruns.csv not present.')
++        [void]$Lines.Add('')
++        return
++    }
++
++    try {
++        $rows = Import-Csv -LiteralPath $csvPath -ErrorAction Stop
++        $flagged = New-Object System.Collections.ArrayList
++        foreach ($row in $rows) {
++            $signer = Get-DFIRObjectProperty -InputObject $row -Name 'Signer'
++            $image = Get-DFIRObjectProperty -InputObject $row -Name 'Image Path'
++            $entry = Get-DFIRObjectProperty -InputObject $row -Name 'Entry'
++            $launch = Get-DFIRObjectProperty -InputObject $row -Name 'Launch String'
++            if (-not $image) { $image = '' }
++            if (-not $launch) { $launch = '' }
++
++            $unsigned = ($signer -eq $null -or $signer -eq '' -or $signer -notmatch '\(Verified\)')
++            $userPath = ($image -match '\\AppData\\|\\Temp\\|\\Downloads\\|\\Users\\Public\\|\\ProgramData\\')
++            $lolbin = ($launch -match 'mshta|regsvr32|certutil|bitsadmin|wscript|cscript|-enc |FromBase64|DownloadString')
++
++            if (($unsigned -and $userPath) -or $lolbin) {
++                [void]$flagged.Add(('{0} | signer={1} | {2}' -f $entry, $signer, $launch))
++            }
++        }
++
++        if ($flagged.Count -eq 0) {
++            [void]$Lines.Add('No autostart entry is both unsigned and located in a user-writable path.')
++        }
++        else {
++            [void]$Lines.Add(('{0} entries flagged:' -f $flagged.Count))
++            [void]$Lines.Add('')
++            foreach ($f in ($flagged | Select-Object -Unique -First 40)) { [void]$Lines.Add(('- ' + $f)) }
++        }
++    }
++    catch {
++        [void]$Lines.Add(('Autoruns.csv could not be parsed: {0}' -f $_.Exception.Message))
++    }
++    [void]$Lines.Add('')
++}
++
++function Add-DFIRTriageListeners {
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.ArrayList]$Lines
++    )
++
++    [void]$Lines.Add('## Services listening on all interfaces')
++    [void]$Lines.Add('')
++    try {
++        $listeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
++            Where-Object { $_.LocalAddress -eq '0.0.0.0' -or $_.LocalAddress -eq '::' } |
++            Where-Object { $_.LocalPort -lt 49000 } |
++            Sort-Object LocalPort -Unique
++
++        if (-not $listeners) {
++            [void]$Lines.Add('No non-ephemeral listener bound to all interfaces.')
++        }
++        else {
++            foreach ($l in $listeners) {
++                $procName = ''
++                try { $procName = (Get-Process -Id $l.OwningProcess -ErrorAction SilentlyContinue).Path } catch { }
++                $note = ''
++                switch ($l.LocalPort) {
++                    3389  { $note = '  <-- Remote Desktop' }
++                    5900  { $note = '  <-- VNC' }
++                    5800  { $note = '  <-- VNC over HTTP' }
++                    7070  { $note = '  <-- AnyDesk' }
++                    3306  { $note = '  <-- MySQL/MariaDB' }
++                    1433  { $note = '  <-- MSSQL' }
++                    16992 { $note = '  <-- Intel AMT (out-of-band management)' }
++                    16993 { $note = '  <-- Intel AMT over TLS' }
++                    623   { $note = '  <-- IPMI/ASF-RMCP' }
++                    5985  { $note = '  <-- WinRM' }
++                    5986  { $note = '  <-- WinRM over TLS' }
++                }
++                [void]$Lines.Add(('- {0}:{1}  pid={2}  {3}{4}' -f $l.LocalAddress, $l.LocalPort, $l.OwningProcess, $procName, $note))
++            }
++        }
++    }
++    catch {
++        [void]$Lines.Add(('Listener enumeration failed: {0}' -f $_.Exception.Message))
++    }
++    [void]$Lines.Add('')
++}
++
++function Add-DFIRTriageRemoteAccess {
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.ArrayList]$Lines
++    )
++
++    [void]$Lines.Add('## Remote-access and dual-use software')
++    [void]$Lines.Add('')
++    try {
++        $pattern = 'AnyDesk|TeamViewer|VNC|Ammyy|Radmin|RustDesk|LogMeIn|Splashtop|ScreenConnect|GoToAssist|Atera|ngrok|Wireshark|Nmap|PuTTY|Everything|TeraBox|Tor Browser|activation|KMS'
++        $roots = @(
++            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
++            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
++        )
++        $found = Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
++            Where-Object { $_.DisplayName -and $_.DisplayName -match $pattern } |
++            Select-Object DisplayName, DisplayVersion, Publisher, InstallDate
++
++        if (-not $found) {
++            [void]$Lines.Add('No remote-access or dual-use software matched the watch-list.')
++        }
++        else {
++            foreach ($f in $found) {
++                [void]$Lines.Add(('- {0} {1} ({2}) installed {3}' -f $f.DisplayName, $f.DisplayVersion, $f.Publisher, $f.InstallDate))
++            }
++        }
++    }
++    catch {
++        [void]$Lines.Add(('Software watch-list check failed: {0}' -f $_.Exception.Message))
++    }
++    [void]$Lines.Add('')
++}
++
++function Add-DFIRTriageTasks {
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.ArrayList]$Lines
++    )
++
++    [void]$Lines.Add('## Non-Microsoft scheduled tasks running as SYSTEM')
++    [void]$Lines.Add('')
++    try {
++        $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue |
++            Where-Object { $_.TaskPath -notlike '\Microsoft\*' }
++
++        $flagged = New-Object System.Collections.ArrayList
++        foreach ($task in $tasks) {
++            $principal = $null
++            try { $principal = $task.Principal.UserId } catch { }
++            $isSystem = ($principal -match 'SYSTEM|S-1-5-18')
++            $author = $null
++            try { $author = $task.Author } catch { }
++            $suspiciousAuthor = ($author -and $author -notmatch 'Microsoft|Lenovo|Intel|Google|Mozilla|Adobe|Zoom|Realtek|NT AUTHORITY')
++            if ($isSystem -or $suspiciousAuthor) {
++                [void]$flagged.Add(('{0}{1} | author={2} | runas={3} | state={4}' -f $task.TaskPath, $task.TaskName, $author, $principal, $task.State))
++            }
++        }
++
++        if ($flagged.Count -eq 0) {
++            [void]$Lines.Add('No non-Microsoft task runs as SYSTEM or carries an unrecognised author.')
++        }
++        else {
++            foreach ($f in ($flagged | Select-Object -Unique -First 40)) { [void]$Lines.Add(('- ' + $f)) }
++        }
++    }
++    catch {
++        [void]$Lines.Add(('Scheduled task check failed: {0}' -f $_.Exception.Message))
++    }
++    [void]$Lines.Add('')
++}
++
++function Add-DFIRTriageCollectionGaps {
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory=$true)][hashtable]$Context,
++        [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.ArrayList]$Lines
++    )
++
++    [void]$Lines.Add('## Collection gaps affecting the strength of negative findings')
++    [void]$Lines.Add('')
++    $gaps = New-Object System.Collections.ArrayList
++
++    if (Test-Path -LiteralPath $Context.LogFile -PathType Leaf) {
++        $log = Get-Content -LiteralPath $Context.LogFile -ErrorAction SilentlyContinue
++        $warnCount = @($log | Where-Object { $_ -match '\[WARN\]' }).Count
++        $errCount = @($log | Where-Object { $_ -match '\[ERROR\]' }).Count
++        [void]$gaps.Add(('Collection.log recorded {0} warnings and {1} errors; review before relying on any negative finding.' -f $warnCount, $errCount))
++
++        foreach ($line in $log) {
++            if ($line -match 'is INSTALLED but no log path was found') { [void]$gaps.Add($line.Trim()) }
++            if ($line -match 'Locked-file copy failed after all fallbacks') { [void]$gaps.Add($line.Trim()) }
++            if ($line -match 'Collector root .* is inside YARA target') { [void]$gaps.Add($line.Trim()) }
++        }
++    }
++
++    [void]$gaps.Add('No memory image was captured; memory-resident implants cannot be excluded.')
++    [void]$gaps.Add('No MFT or USN journal was parsed; deleted-file history is not reconstructable from this collection.')
++    [void]$gaps.Add('Browser credential stores are collected but remain DPAPI-encrypted; presence and timestamps only.')
++
++    foreach ($gap in ($gaps | Select-Object -Unique)) { [void]$Lines.Add(('- ' + $gap)) }
++    [void]$Lines.Add('')
++}
+

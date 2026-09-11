@@ -1,0 +1,20 @@
+/*
+    Example in-house rule. Not built: the builder only picks up *.yar and
+    *.yara. Copy to e.g. custom/acme_webshells.yar, adapt, test, commit.
+*/
+
+rule ACME_Webshell_EvalPost
+{
+    meta:
+        author      = "ACME DFIR Team"
+        description = "PHP webshell evaluating a POST parameter (in-house example)"
+        date        = "2026-09-11"
+        reference   = "https://intranet.example.org/ir/cases/IR-2026-042"
+
+    strings:
+        $php  = "<?php" ascii nocase
+        $eval = /eval\s*\(\s*\$_(POST|REQUEST)\[/ ascii nocase
+
+    condition:
+        filesize < 200KB and $php and $eval
+}

@@ -1,0 +1,65 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    name: Lint and offline tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck dash zstd yara
+      - name: Run offline test suite
+        run: tests/run-tests.sh
+
+  linux-collection:
+    name: Live collection smoke test (Linux)
+    runs-on: ubuntu-latest
+    needs: offline
+    steps:
+      - uses: actions/checkout@v4
+      - name: Quick collection on the runner
+        run: sudo ./vestigium.sh --case-id CI-${{ github.run_id }} --quick --skip-yara --output "$RUNNER_TEMP/evidence"
+      - name: Verify the evidence package
+        run: |
+          archive="$(ls "$RUNNER_TEMP"/evidence/*.tar.* | grep -v '\.sha256$' | head -n 1)"
+          sudo ./vestigium.sh verify "$archive"
+
+  windows-collection:
+    name: Live collection smoke test (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    needs: offline
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse every script with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $files = Get-ChildItem -Recurse -Filter *.ps1 | Where-Object { $_.FullName -notmatch '\\(output|yara-rules)\\' }
+          & .\tests\ps-parse.ps1 @($files.FullName)
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Launcher basics
+        shell: cmd
+        run: |
+          call vestigium.cmd version || exit /b 1
+          call vestigium.cmd -ListModules || exit /b 1
+      - name: Collection on the runner (elevated)
+        shell: powershell
+        run: |
+          .\vestigium.ps1 -CaseId "CI-$env:GITHUB_RUN_ID" -SkipYara -OutputPath "$env:RUNNER_TEMP\evidence"
+          # 1 = a step reported warnings on this runner; anything else is a failure.
+          if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }
+          exit 0
+      - name: Verify the evidence package
+        shell: powershell
+        run: |
+          $zip = Get-ChildItem "$env:RUNNER_TEMP\evidence" -Filter *.zip | Select-Object -First 1
+          .\vestigium.ps1 verify $zip.FullName
+          exit $LASTEXITCODE

@@ -1,0 +1,259 @@
+<!doctype html>
+<!--
+  Vestigium findings report - self-contained, offline.
+
+  This is a template. A collector produces the real report by replacing the
+  placeholder content of the #vestigium-findings script element (a single
+  underscore-delimited token) with the run's findings JSON, escaping the three
+  characters < > & first so the data cannot close the script element. See
+  docs/FINDINGS-SCHEMA.md. No network access is required to view this file.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vestigium findings</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1b2733; --muted: #5b6b7b;
+    --line: #e2e6ea; --accent: #b45309;
+    --crit: #b91c1c; --high: #c2410c; --med: #b45309; --low: #2563eb; --info: #4b5563;
+    --crit-bg: #fbeaea; --high-bg: #fbeee6; --med-bg: #fbf3e2; --low-bg: #e9f0fd; --info-bg: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f141a; --panel: #161c24; --ink: #e6ebf0; --muted: #93a1b0;
+      --line: #263039; --accent: #f59e0b;
+      --crit: #f87171; --high: #fb923c; --med: #fbbf24; --low: #60a5fa; --info: #9ca3af;
+      --crit-bg: #2a1414; --high-bg: #2a1c11; --med-bg: #29220f; --low-bg: #131f33; --info-bg: #1a2029;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 18px 64px; }
+  header.top { border-bottom: 2px solid var(--accent); padding-bottom: 14px; margin-bottom: 18px; }
+  h1 { margin: 0 0 2px; font-size: 22px; letter-spacing: .3px; }
+  h1 small { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 22px; color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .banner { margin: 12px 0 0; padding: 8px 12px; border-radius: 6px; background: var(--high-bg);
+            border: 1px solid var(--line); color: var(--high); font-weight: 600; }
+  .tiles { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 8px; }
+  .tile { flex: 1 1 120px; background: var(--panel); border: 1px solid var(--line);
+          border-radius: 8px; padding: 10px 12px; cursor: pointer; user-select: none; }
+  .tile:focus-visible { outline: 2px solid var(--accent); }
+  .tile .n { font-size: 26px; font-weight: 700; line-height: 1; }
+  .tile .l { text-transform: uppercase; letter-spacing: .6px; font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .tile[aria-pressed="false"] { opacity: .45; }
+  .tile.c-crit .n { color: var(--crit); } .tile.c-high .n { color: var(--high); }
+  .tile.c-med .n { color: var(--med); } .tile.c-low .n { color: var(--low); } .tile.c-info .n { color: var(--info); }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 16px; }
+  .controls input { flex: 1 1 220px; padding: 7px 10px; border: 1px solid var(--line);
+                    border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 13px; }
+  .controls button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px;
+                     background: var(--panel); color: var(--ink); cursor: pointer; font-size: 13px; }
+  .finding { background: var(--panel); border: 1px solid var(--line); border-left-width: 4px;
+             border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+  .finding.s-critical { border-left-color: var(--crit); }
+  .finding.s-high { border-left-color: var(--high); }
+  .finding.s-medium { border-left-color: var(--med); }
+  .finding.s-low { border-left-color: var(--low); }
+  .finding.s-info { border-left-color: var(--info); }
+  .fhead { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; cursor: pointer; }
+  .fhead h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .fhead .sum { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .sev { flex: 0 0 auto; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+         padding: 3px 8px; border-radius: 999px; }
+  .sev.s-critical { color: var(--crit); background: var(--crit-bg); }
+  .sev.s-high { color: var(--high); background: var(--high-bg); }
+  .sev.s-medium { color: var(--med); background: var(--med-bg); }
+  .sev.s-low { color: var(--low); background: var(--low-bg); }
+  .sev.s-info { color: var(--info); background: var(--info-bg); }
+  .grow { flex: 1 1 auto; min-width: 0; }
+  .cat { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+  .fbody { padding: 0 14px 14px; display: none; }
+  .finding.open .fbody { display: block; }
+  .fbody .detail { color: var(--muted); margin: 0 0 8px; }
+  .kv { font-size: 12px; color: var(--muted); margin: 6px 0; }
+  .kv code { color: var(--ink); word-break: break-all; }
+  pre.items { background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+              padding: 8px 10px; overflow-x: auto; font-size: 12.5px; margin: 6px 0 0;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .note { font-size: 12px; color: var(--accent); margin-top: 8px; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+  section.gaps { margin-top: 26px; }
+  section.gaps h2 { font-size: 15px; margin: 0 0 8px; }
+  section.gaps ul { margin: 0; padding-left: 18px; color: var(--muted); }
+  footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 12px; }
+  a { color: var(--low); }
+  @media print {
+    body { background: #fff; color: #000; }
+    .controls, .tiles { display: none; }
+    .finding, .tile { break-inside: avoid; }
+    .fbody { display: block !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Vestigium findings <small id="h-sub"></small></h1>
+    <div class="meta" id="h-meta"></div>
+    <div class="banner" id="h-banner" hidden></div>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="controls">
+    <input id="q" type="search" placeholder="Filter by text, category or id...">
+    <button id="expand" type="button">Expand all</button>
+    <button id="collapse" type="button">Collapse all</button>
+    <button id="print" type="button">Print</button>
+  </div>
+
+  <div id="list"></div>
+
+  <section class="gaps" id="gaps" hidden>
+    <h2>Collection gaps affecting negative findings</h2>
+    <ul id="gaps-list"></ul>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script id="vestigium-findings" type="application/json">__VESTIGIUM_FINDINGS_JSON__</script>
+<script>
+(function () {
+  "use strict";
+  var SEV = ["critical", "high", "medium", "low", "info"];
+  var el = function (id) { return document.getElementById(id); };
+  var text = function (s) { return (s === null || s === undefined) ? "" : String(s); };
+
+  var data;
+  try {
+    data = JSON.parse(el("vestigium-findings").textContent);
+    if (!data || data.placeholder || !data.schema) { throw new Error("no data"); }
+  } catch (e) {
+    document.querySelector(".wrap").innerHTML =
+      '<div class="empty"><h1>Vestigium findings</h1>' +
+      '<p>This is the report template. Open the <code>findings.html</code> from a collection instead.</p></div>';
+    return;
+  }
+
+  var findings = Array.isArray(data.findings) ? data.findings.slice() : [];
+  var order = {}; SEV.forEach(function (s, i) { order[s] = i; });
+  findings.sort(function (a, b) {
+    var d = (order[a.severity] || 9) - (order[b.severity] || 9);
+    return d !== 0 ? d : (b.count || 0) - (a.count || 0);
+  });
+
+  // Header
+  var host = data.host || {}, col = data.collection || {};
+  el("h-sub").textContent = host.hostname ? "— " + host.hostname : "";
+  var meta = [
+    ["Case", data.case_id], ["Host", host.hostname], ["Platform", host.platform],
+    ["OS", host.os], ["Collector", col.collector_version], ["Status", col.status],
+    ["Generated", data.generated_utc]
+  ];
+  el("h-meta").innerHTML = meta.filter(function (m) { return text(m[1]); })
+    .map(function (m) { return "<span><b>" + m[0] + ":</b> " + escapeHtml(m[1]) + "</span>"; }).join("");
+  if (col.status === "interrupted") {
+    var b = el("h-banner"); b.hidden = false;
+    b.textContent = "This collection was INTERRUPTED - findings cover only what was collected.";
+  }
+
+  // Severity tiles (also act as filters)
+  var counts = data.counts || {};
+  var active = {}; SEV.forEach(function (s) { active[s] = true; });
+  el("tiles").innerHTML = SEV.map(function (s) {
+    var n = counts[s] || 0;
+    return '<div class="tile c-' + s.slice(0, 4) + '" role="button" tabindex="0" data-sev="' + s +
+      '" aria-pressed="true"><div class="n">' + n + '</div><div class="l">' + s + '</div></div>';
+  }).join("");
+
+  var q = el("q");
+  function render() {
+    var term = q.value.trim().toLowerCase();
+    var host = el("list");
+    var shown = findings.filter(function (f) {
+      if (!active[f.severity]) { return false; }
+      if (!term) { return true; }
+      var hay = [f.title, f.summary, f.detail, f.category, f.id].concat(f.items || []).join(" ").toLowerCase();
+      return hay.indexOf(term) !== -1;
+    });
+    if (!shown.length) {
+      host.innerHTML = '<div class="empty">No findings match the current filter.' +
+        (findings.length ? "" : " The collection produced no triage findings.") + "</div>";
+      return;
+    }
+    host.innerHTML = shown.map(renderFinding).join("");
+  }
+
+  function renderFinding(f) {
+    var sev = SEV.indexOf(f.severity) === -1 ? "info" : f.severity;
+    var ev = (f.evidence || []).map(function (p) { return "<code>" + escapeHtml(p) + "</code>"; }).join("<br>");
+    var items = (f.items || []).map(escapeHtml).join("\n");
+    var more = (f.count || 0) > (f.items || []).length
+      ? "\n... " + ((f.count || 0) - (f.items || []).length) + " more (see the evidence file)" : "";
+    var body =
+      (text(f.detail) ? '<p class="detail">' + escapeHtml(f.detail) + "</p>" : "") +
+      '<div class="kv"><b>Count:</b> ' + (f.count || 0) + " &nbsp; <b>ID:</b> <code>" + escapeHtml(f.id) + "</code></div>" +
+      (ev ? '<div class="kv"><b>Evidence:</b><br>' + ev + "</div>" : "") +
+      (items ? '<pre class="items">' + items + escapeHtml(more) + "</pre>" : "") +
+      (text(f.note) ? '<div class="note">' + escapeHtml(f.note) + "</div>" : "");
+    return '<div class="finding s-' + sev + '">' +
+      '<div class="fhead"><span class="sev s-' + sev + '">' + sev + "</span>" +
+      '<div class="grow"><h3>' + escapeHtml(f.title) + "</h3>" +
+      '<div class="sum">' + escapeHtml(f.summary) + "</div></div>" +
+      '<span class="cat">' + escapeHtml(f.category || "") + " &middot; " + (f.count || 0) + "</span></div>" +
+      '<div class="fbody">' + body + "</div></div>";
+  }
+
+  // Interaction
+  el("list").addEventListener("click", function (e) {
+    var h = e.target.closest(".fhead"); if (h) { h.parentNode.classList.toggle("open"); }
+  });
+  function toggleTile(t) {
+    var s = t.getAttribute("data-sev"); active[s] = !active[s];
+    t.setAttribute("aria-pressed", active[s] ? "true" : "false"); render();
+  }
+  el("tiles").addEventListener("click", function (e) {
+    var t = e.target.closest(".tile"); if (t) { toggleTile(t); }
+  });
+  el("tiles").addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { var t = e.target.closest(".tile"); if (t) { e.preventDefault(); toggleTile(t); } }
+  });
+  q.addEventListener("input", render);
+  el("expand").addEventListener("click", function () {
+    [].forEach.call(document.querySelectorAll(".finding"), function (f) { f.classList.add("open"); });
+  });
+  el("collapse").addEventListener("click", function () {
+    [].forEach.call(document.querySelectorAll(".finding"), function (f) { f.classList.remove("open"); });
+  });
+  el("print").addEventListener("click", function () { window.print(); });
+
+  // Gaps and notes
+  var gaps = Array.isArray(data.gaps) ? data.gaps : [];
+  if (gaps.length) {
+    el("gaps").hidden = false;
+    el("gaps-list").innerHTML = gaps.map(function (g) { return "<li>" + escapeHtml(g) + "</li>"; }).join("");
+  }
+  var notes = (Array.isArray(data.notes) ? data.notes : []).map(escapeHtml).join(" ");
+  el("foot").innerHTML = (notes || "Automated observations to prioritise review, not conclusions.") +
+    "<br>Generated by Vestigium " + escapeHtml(col.collector_version || "") +
+    ". Evidence root: <code>" + escapeHtml(col.evidence_root || "") + "</code>.";
+
+  function escapeHtml(s) {
+    return text(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  render();
+})();
+</script>
+</body>
+</html>

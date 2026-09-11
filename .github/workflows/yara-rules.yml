@@ -1,0 +1,155 @@
+# Weekly YARA rule refresh: fetch the latest upstream commits listed in
+# shared/yara-rules/sources.conf, validate and build the bundle, scan a clean
+# corpus for false positives, and propose the new rules.lock as a pull request.
+# The bundle itself is never committed (upstream licences: DRL 1.1, GPL-2.0).
+# See docs/YARA-RULES.md.
+name: YARA rules
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yara-rules
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Fetch, build and propose rules.lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write        # push the automation branch
+      pull-requests: write   # open / update the pull request
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install yara and git
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y yara git
+          yara --version
+
+      - name: Keep the current lock for comparison
+        run: |
+          if [ -f shared/yara-rules/rules.lock ]; then
+            cp shared/yara-rules/rules.lock "$RUNNER_TEMP/rules.lock.before"
+          else
+            : >"$RUNNER_TEMP/rules.lock.before"
+          fi
+
+      # --rules-only needs no root: it only writes the rules directory. It exits
+      # non-zero when the bundle cannot be built or does not compile.
+      - name: Fetch latest sources, build and check false positives
+        run: bash platforms/linux/tools/setup-tools.sh --rules-only --fp-corpus /usr/bin
+
+      - name: Compile the bundle independently
+        run: yarac -w shared/yara-rules/active-rules.yar "$RUNNER_TEMP/active-rules.compiled"
+
+      - name: Summarise changes
+        id: summary
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - "$RUNNER_TEMP/rules.lock.before" shared/yara-rules/rules.lock \
+                    shared/yara-rules/rule-fp-report.txt "$RUNNER_TEMP/pr-body.md" <<'PY'
+          import os, sys
+
+          def parse(path):
+              sections, current = {}, None
+              try:
+                  lines = open(path, encoding="utf-8").read().splitlines()
+              except OSError:
+                  lines = []
+              for raw in lines:
+                  line = raw.strip()
+                  if not line or line[0] in "#;":
+                      continue
+                  if line.startswith("[") and line.endswith("]"):
+                      current = line[1:-1].strip()
+                      sections.setdefault(current, {})
+                  elif current and "=" in line:
+                      key, value = line.split("=", 1)
+                      sections[current][key.strip()] = value.strip()
+              return sections
+
+          before_path, after_path, fp_path, body_path = sys.argv[1:5]
+          old, new = parse(before_path), parse(after_path)
+          changed = open(before_path, "rb").read() != open(after_path, "rb").read()
+
+          def short(sha):
+              return sha[:12] if sha else "-"
+
+          out = ["Automated weekly YARA rule refresh ([workflow run](%s))." % os.environ["RUN_URL"], ""]
+          out += ["| Source | Previous commit | New commit | Commit date |", "|---|---|---|---|"]
+          names = [s for s in new if s.startswith("source ")] + \
+                  [s for s in old if s.startswith("source ") and s not in new]
+          for section in names:
+              o, n = old.get(section, {}), new.get(section, {})
+              mark = "" if o.get("commit") == n.get("commit") else " **(updated)**"
+              out.append("| `%s` | `%s` | `%s`%s | %s |" % (section[7:], short(o.get("commit", "")),
+                         short(n.get("commit", "")), mark, n.get("commit_date", "-")))
+          out += ["", "| Bundle | Before | After | Delta |", "|---|---|---|---|"]
+          for key, label in (("rules", "Rules"), ("rules_reporting", "Rules reporting (non-private)"),
+                             ("files_accepted", "Files accepted"), ("files_skipped", "Files skipped")):
+              a, b = old.get("bundle", {}).get(key, ""), new.get("bundle", {}).get(key, "")
+              try:
+                  delta = "%+d" % (int(b) - int(a))
+              except ValueError:
+                  delta = "n/a"
+              out.append("| %s | %s | %s | %s |" % (label, a or "-", b or "-", delta))
+          out.append("| SHA256 | `%s` | `%s` | |" % (short(old.get("bundle", {}).get("sha256", "")),
+                                                   short(new.get("bundle", {}).get("sha256", ""))))
+          lock = new.get("lock", {})
+          out += ["", "Built by %s with yara %s." % (lock.get("builder", "?"), lock.get("yara", "?")), ""]
+          try:
+              fp = open(fp_path, encoding="utf-8").read().splitlines()
+          except OSError:
+              fp = []
+          if fp:
+              out += ["<details><summary>False-positive check on <code>/usr/bin</code> (runner image)</summary>", "",
+                      "```text"] + fp[:60] + ["```", "", "</details>", ""]
+          out += ["**Review:** download the `yara-rules-*` artifact (build report, FP report, lock), compare",
+                  "with the previous run, tune `shared/yara-rules/exclusions.conf` on this branch if needed,",
+                  "then merge. Field kits then run `sudo ./vestigium.sh setup --rules-locked`",
+                  "(Windows: `.\\vestigium.ps1 setup -Locked`)."]
+          body = "\n".join(out) + "\n"
+          open(body_path, "w", encoding="utf-8").write(body)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(body)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("changed=%s\n" % ("true" if changed else "false"))
+          print("rules.lock changed:", changed)
+          PY
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yara-rules-${{ github.run_number }}
+          path: |
+            shared/yara-rules/rule-build-report.csv
+            shared/yara-rules/rule-fp-report.txt
+            shared/yara-rules/rules.lock
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Only rules.lock is committed. Set the RULES_PR_TOKEN secret (fine-grained
+      # token, contents + pull-requests write) if the PR should trigger tests.yml;
+      # PRs opened with the default GITHUB_TOKEN do not start other workflows.
+      - name: Open or update the pull request
+        if: steps.summary.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RULES_PR_TOKEN || github.token }}
+          add-paths: shared/yara-rules/rules.lock
+          commit-message: "yara-rules: update rules.lock to the latest upstream commits"
+          branch: automation/yara-rules
+          delete-branch: true
+          title: "YARA rules: weekly update"
+          body-path: ${{ runner.temp }}/pr-body.md

@@ -1,0 +1,42 @@
+# Vestigium YARA rule lock (format 1) - generated, but versioned in git.
+# Written by the rule builder after every successful build (unless only the
+# 'generated' line would change). Reproduce this exact build with:
+#   Linux:   sudo ./vestigium.sh setup --rules-locked
+#   Windows: .\vestigium.ps1 setup -Locked
+# Format: "key = value" lines under [lock], [source <name>] (in precedence
+# order), [custom], [exclusions] and [bundle]. See docs/YARA-RULES.md.
+
+[lock]
+format = 1
+generated = 2026-09-11T04:44:14Z
+builder = build-yara-rules.py (Linux)
+yara = 4.5.0
+
+[source signature-base]
+url = https://github.com/Neo23x0/signature-base.git
+ref =
+commit = 43b2b2faafdaeb7f00102673f62555a2feb04c1b
+commit_date = 2026-06-17T12:05:58+02:00
+
+[source rules]
+url = https://github.com/Yara-Rules/rules.git
+ref =
+commit = 0f93570194a80d2f2032869055808b0ddcdfb360
+commit_date = 2022-04-12T17:53:58+00:00
+
+[custom]
+files = 0
+sha256 = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+[exclusions]
+sha256 = 97ee3fd960297bb5903fc001cba6edc9243b520c9e3bd0e2ac49454d96ac2b9f
+files_excluded = 0
+rules_suppressed = 0
+
+[bundle]
+file = active-rules.yar
+sha256 = 8b63ed205cccf6951a4d293bb451933ce54b1ba361a5bb4c0c9fed56ec6c8493
+rules = 15683
+rules_reporting = 15660
+files_accepted = 1090
+files_skipped = 140

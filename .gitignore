@@ -1,0 +1,25 @@
+# Evidence never belongs in version control.
+/output/*
+!/output/.gitkeep
+
+# Toolkit payloads staged by setup: binaries, caches, generated wrappers and
+# host-specific build records. `setup` recreates all of them.
+/platforms/linux/tools/deb/
+/platforms/linux/tools/portable/
+/platforms/linux/tools/bin/
+/platforms/linux/tools/setup.log
+/platforms/linux/tools/TOOLS.md
+/platforms/windows/Tools/*.exe
+
+# YARA rules: third-party repositories (own licences: DRL 1.1, GPL-2.0) and
+# everything built from them. Only the source configuration and your own
+# rules under shared/yara-rules/custom/ are versioned.
+/shared/yara-rules/*
+!/shared/yara-rules/sources.conf
+!/shared/yara-rules/exclusions.conf
+!/shared/yara-rules/custom/
+!/shared/yara-rules/README.md
+
+__pycache__/
+*.pyc
+!/shared/yara-rules/rules.lock

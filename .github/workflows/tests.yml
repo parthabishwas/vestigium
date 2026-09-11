@@ -30,8 +30,11 @@ jobs:
         run: sudo ./vestigium.sh --case-id CI-${{ github.run_id }} --quick --skip-yara --output "$RUNNER_TEMP/evidence"
       - name: Verify the evidence package
         run: |
+          # The collection runs under sudo, so its output is root-owned. Make it
+          # world-readable before globbing and verifying as the runner user.
+          sudo chmod -R a+rX "$RUNNER_TEMP/evidence"
           archive="$(ls "$RUNNER_TEMP"/evidence/*.tar.* | grep -v '\.sha256$' | head -n 1)"
-          sudo ./vestigium.sh verify "$archive"
+          ./vestigium.sh verify "$archive"
 
   windows-collection:
     name: Live collection smoke test (Windows PowerShell 5.1)
@@ -43,7 +46,8 @@ jobs:
         shell: powershell
         run: |
           $files = Get-ChildItem -Recurse -Filter *.ps1 | Where-Object { $_.FullName -notmatch '\\(output|yara-rules)\\' }
-          & .\tests\ps-parse.ps1 @($files.FullName)
+          $paths = @($files | ForEach-Object { $_.FullName })
+          & .\tests\ps-parse.ps1 @paths   # splat: one argument per file
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Launcher basics
         shell: cmd

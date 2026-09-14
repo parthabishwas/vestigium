@@ -8,21 +8,21 @@
 
 [lock]
 format = 1
-generated = 2026-09-11T04:44:14Z
+generated = 2026-09-14T08:57:44Z
 builder = build-yara-rules.py (Linux)
 yara = 4.5.0
 
 [source signature-base]
 url = https://github.com/Neo23x0/signature-base.git
 ref =
-commit = 43b2b2faafdaeb7f00102673f62555a2feb04c1b
-commit_date = 2026-06-17T12:05:58+02:00
+commit = 94a1c48d7ab499879287ff611dfe7f9c56376030
+commit_date = 2026-09-08T09:50:49+02:00
 
 [source rules]
 url = https://github.com/Yara-Rules/rules.git
 ref =
 commit = 0f93570194a80d2f2032869055808b0ddcdfb360
-commit_date = 2022-04-12T17:53:58+00:00
+commit_date = 2022-04-12T17:53:58Z
 
 [custom]
 files = 0
@@ -35,8 +35,8 @@ rules_suppressed = 0
 
 [bundle]
 file = active-rules.yar
-sha256 = 8b63ed205cccf6951a4d293bb451933ce54b1ba361a5bb4c0c9fed56ec6c8493
-rules = 15683
-rules_reporting = 15660
-files_accepted = 1090
-files_skipped = 140
+sha256 = 6195c3c09bfcd0df6dc6abf40d9b5b81c4482a5e379ace4258a95354b812335d
+rules = 15690
+rules_reporting = 15667
+files_accepted = 1092
+files_skipped = 139

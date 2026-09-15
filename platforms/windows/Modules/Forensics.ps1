@@ -270,8 +270,10 @@ function Invoke-DFIRVssAcquire {
     if (-not $logOk) { $logOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$LogFile') -Destination $logOut }
     $usnOk = Copy-DFIRRawCopy -Context $Context -FileNamePath ($liveDrive + '\$Extend\$UsnJrnl:$J') -Destination $usnOut
     if (-not $usnOk) { $usnOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$Extend\$UsnJrnl:$J') -Destination $usnOut }
-    # Always also take an independent live fsutil USN read.
-    [void](Export-DFIRRawUsnFallback -Context $Context -Lines $lines)
+    # Always also take an independent live fsutil USN read - this is the primary
+    # USN acquisition (an analyzable CSV of the journal). RawCopy/esentutl of the
+    # raw $J stream is a bonus for tools that want the binary journal.
+    $usnFsutilOk = Export-DFIRRawUsnFallback -Context $Context -Lines $lines
 
     # --- Phase 2: our own shadow copy, for the registry hives (regular files,
     #     copyable from the snapshot) and a raw fallback for any metadata file
@@ -279,8 +281,8 @@ function Invoke-DFIRVssAcquire {
     $shadow = New-DFIRShadowCopy -Context $Context
     if (-not $shadow) {
         [void]$lines.Add('Shadow copy: NOT AVAILABLE for hives (VSS creation failed - see the collection log).')
-        [void]$lines.Add(('OK/FAIL  metadata via esentutl: $MFT={0} $LogFile={1} $UsnJrnl={2}' -f $mftOk, $logOk, $usnOk))
-        if ($mftOk -or $usnOk) { $Context['NtfsAcquired'] = $true }
+        [void]$lines.Add(('metadata: $MFT={0} $LogFile={1} raw-$UsnJrnl={2} fsutil-USN={3}' -f $mftOk, $logOk, $usnOk, $usnFsutilOk))
+        if ($mftOk -or $usnOk -or $usnFsutilOk) { $Context['NtfsAcquired'] = $true }
         Write-DFIRAcquisitionNote -Context $Context -Dest $dest -Lines $lines
         return $true   # not fatal
     }
@@ -295,10 +297,15 @@ function Invoke-DFIRVssAcquire {
         if (-not $logOk) { $logOk = Copy-DFIRRawFile   -Context $Context -Source ($device + '\$LogFile') -Destination $logOut }
         if (-not $usnOk) { $usnOk = Copy-DFIRUsnJournal -Context $Context -Source ($device + '\$Extend\$UsnJrnl:$J') -Destination $usnOut }
 
-        foreach ($pair in @(@('$MFT', $mftOk), @('$LogFile', $logOk), @('$UsnJrnl:$J', $usnOk))) {
+        foreach ($pair in @(@('$MFT', $mftOk), @('$LogFile', $logOk))) {
             if ($pair[1]) { [void]$lines.Add(('OK    {0} acquired' -f $pair[0])) }
-            else { [void]$lines.Add(('FAIL  {0} not acquired (fsutil USN read still written)' -f $pair[0])) }
+            else { [void]$lines.Add(('FAIL  {0} not acquired' -f $pair[0])) }
         }
+        # USN: the fsutil readjournal CSV is the primary, analyzable capture; the
+        # raw $J binary is a bonus (RawCopy cannot always resolve the sparse ADS).
+        if ($usnOk) { [void]$lines.Add('OK    $UsnJrnl:$J -> UsnJrnl_J (raw), plus fsutil readjournal CSV') }
+        elseif ($usnFsutilOk) { [void]$lines.Add('OK    USN journal via fsutil readjournal (CSV); raw $J stream not extracted') }
+        else { [void]$lines.Add('FAIL  USN journal not acquired') }
 
         # Registry hives from the snapshot - no reg-hive load, no lock problem.
         # These drive ShellBags, UserAssist, RecentDocs and more, offline.
@@ -362,8 +369,8 @@ function Invoke-DFIRVssAcquire {
         else { [void]$lines.Add('FAIL  Amcache.hve not acquired from the snapshot') }
 
         # NtfsAcquired gates the "$MFT/$UsnJrnl acquired" gap wording, so key it
-        # on the metadata, not the hives.
-        $Context['NtfsAcquired'] = ($mftOk -or $usnOk)
+        # on the metadata (MFT or any USN capture), not the hives.
+        $Context['NtfsAcquired'] = ($mftOk -or $usnOk -or $usnFsutilOk)
     }
     catch {
         Write-DFIRLog -Context $Context -Level ERROR -Message ("VSS acquisition error: {0}" -f $_.Exception.Message)

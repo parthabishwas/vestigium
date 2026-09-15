@@ -413,7 +413,7 @@ vestigium/
 │   ├── yara-rules/              sources.conf · exclusions.conf · custom/ · rules.lock
 │   ├── verify-evidence.sh       verifier (Bash)
 │   └── Verify-Evidence.ps1      verifier (PowerShell)
-├── docs/                        YARA-RULES.md · DATA-HANDLING.md · FINDINGS-SCHEMA.md · TRUSTED-MODE.md · WINDOWS-ARTIFACTS.md · history/
+├── docs/                        YARA-RULES.md · DATA-HANDLING.md · FINDINGS-SCHEMA.md · TRUSTED-MODE.md · WINDOWS-ARTIFACTS.md · OFFLINE.md · history/
 │   shared/report/                findings-template.html (the shared report UI)
 ├── tests/                       offline test suite
 ├── .github/workflows/           tests · weekly YARA rule refresh

@@ -198,6 +198,15 @@ Automation and docs:
   (`15_Filesystem/extended_attributes.txt`), with `user.*` attributes - an
   uncommon data-hiding technique - listed separately.
 
+### Offline deployment
+
+- Added [docs/OFFLINE.md](docs/OFFLINE.md): the air-gapped model (stage with
+  `setup` online, collect offline with no network), host prerequisites, the
+  Windows binaries to place in `Tools\` by hand, readiness checks
+  (`info`, `setup --verify`, `tools/TOOLS.md`), and how to update the kit
+  (re-run `setup`; pin `rules.lock` and `AVML_SHA256`). No runtime auto-updater
+  by design, so the collector never needs the network.
+
 ### Verification
 
 - `shared/verify-evidence.sh` and the new `shared/Verify-Evidence.ps1` both

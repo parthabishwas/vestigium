@@ -19,7 +19,8 @@ decrypted from it, and how to handle the package.
 | GNOME Keyring / KWallet / `pass` contents | Presence and metadata only | n/a | none |
 | Cloud and developer credentials (`.aws`, `.kube`, `.docker`, `.netrc`, ...) | Location inventory only | n/a | none |
 | Wi-Fi PSKs, VPN secrets (NetworkManager) | Redacted in place | n/a | none |
-| Windows DPAPI master keys, SAM, LSA secrets | n/a | Not collected | none |
+| Windows machine hives `SAM` / `SECURITY` / `SYSTEM` / `SOFTWARE` (local password hashes, LSA secrets, cached domain credentials) | n/a | **Copied** (via a Volume Shadow Copy, `05_Registry\Hives_VSS\_MACHINE\`) | exclude the `Forensics` step (`-Modules` without it) |
+| Windows DPAPI master keys | n/a | Not extracted (the SYSTEM/SECURITY hives that back them are copied) | as above |
 
 Both platforms therefore behave the same by default: **credential stores are
 copied**. The operator can reduce this to metadata only when the rules of
@@ -50,9 +51,14 @@ without opening the store.
 | **Chromium on Linux**, values prefixed `v10` | **Yes**. The fallback "basic" password store uses a fixed, publicly known key. This is common on servers and minimal desktops without a keyring. |
 | **Chromium on Linux**, values prefixed `v11` | Only with the `Chrome Safe Storage` secret from the user's GNOME Keyring or KWallet. Vestigium does **not** collect keyring contents. |
 | **Chromium on Windows** | Only with the user's DPAPI master key (the user's password, or the domain backup key) and, on current Chrome, the app-bound encryption key. Neither is collected. |
+| **Windows `SAM` + `SYSTEM` hives** | **Yes**: local account NT hashes are recoverable offline (e.g. `secretsdump.py`, `samdump2`) and crackable. |
+| **Windows `SECURITY` + `SYSTEM` hives** | **Yes**: LSA secrets, service-account passwords and cached domain credentials are recoverable offline. |
 
 **Treat every default collection as containing live credentials and session
-cookies.** Stolen cookies allow session hijacking without a password.
+cookies.** Stolen cookies allow session hijacking without a password. On Windows
+a default package also contains the machine hives, so it holds **offline-crackable
+local password hashes and recoverable LSA/cached-domain secrets** - store and
+transfer it as highly sensitive material.
 
 ## When to use metadata mode
 

@@ -339,6 +339,24 @@ function Invoke-DFIRVssAcquire {
             }
         }
         [void]$lines.Add(('OK    machine hives from snapshot: {0}/4 (SAM,SECURITY,SYSTEM,SOFTWARE) -> {1}' -f $machineCount, '05_Registry\Hives_VSS\_MACHINE'))
+
+        # Amcache.hve (execution evidence: path, SHA-1 and first-seen time of
+        # programs the system has seen) is a live registry hive, locked while
+        # Windows runs, so a live copy fails. It is not locked on the snapshot.
+        $amcacheDest = Join-Path $Context.Paths.Execution 'Amcache'
+        $amcacheBase = $device + '\Windows\AppCompat\Programs\Amcache.hve'
+        $amcacheOk = $false
+        foreach ($suffix in @('', '.LOG1', '.LOG2')) {
+            $src = $amcacheBase + $suffix
+            $out = Join-Path $amcacheDest ('Amcache.hve' + $suffix)
+            if (Copy-DFIRLockedFile -Context $Context -Source $src -Destination $out) {
+                if ($suffix -eq '') { $amcacheOk = $true }
+            }
+        }
+        $Context['AmcacheAcquired'] = $amcacheOk
+        if ($amcacheOk) { [void]$lines.Add('OK    Amcache.hve (snapshot) -> 17_Execution\Amcache') }
+        else { [void]$lines.Add('FAIL  Amcache.hve not acquired from the snapshot') }
+
         # NtfsAcquired gates the "$MFT/$UsnJrnl acquired" gap wording, so key it
         # on the metadata, not the hives.
         $Context['NtfsAcquired'] = ($mftOk -or $usnOk)

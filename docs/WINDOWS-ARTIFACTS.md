@@ -20,7 +20,8 @@ collection: the locked NTFS metadata and the locked registry hives.
 | `NTUSER.DAT`, `UsrClass.dat` (+ `.LOG1/.LOG2`) | copied from the shadow copy (no `reg load`) | `05_Registry/Hives_VSS/<user>/` | Registry Explorer / RECmd -> ShellBags, UserAssist, RecentDocs |
 | `SAM`, `SECURITY`, `SYSTEM`, `SOFTWARE` (+ logs) | copied from the shadow copy | `05_Registry/Hives_VSS/_MACHINE/` | secretsdump.py / samdump2 -> local hashes, LSA secrets, cached domain creds |
 | Host firewall profiles + rules | `netsh advfirewall` | `08_Network/FirewallProfiles.txt`, `FirewallRules.txt` | disabled profile flagged as a finding |
-| BITS transfer jobs | `Get-BitsTransfer -AllUsers` | `08_Network/BitsTransfers.csv` | raw-IP or user-writable-path jobs flagged as a finding |
+| BITS transfer jobs | `Get-BitsTransfer -AllUsers` | `08_Network/BitsTransfers.csv` | raw-IP-URL jobs flagged as a finding |
+| `Amcache.hve` (+ logs) | copied from the shadow copy (locked live) | `17_Execution/Amcache/` | AmcacheParser -> program path, SHA-1, first-seen time |
 | Alternate data streams | `Get-Item -Stream *` over user-writable dirs | `21_FileSystem/AlternateDataStreams.csv` | Zone.Identifier download provenance, ADS-hidden payloads |
 | Staging archives | recursive listing | `21_FileSystem/StagingArchives.csv` | zip/rar/7z/... in Temp/AppData/Users\Public |
 | Windows Error Reporting | `Report.wer` copy | `21_FileSystem/WER/` | crash/injection evidence (no dumps) |

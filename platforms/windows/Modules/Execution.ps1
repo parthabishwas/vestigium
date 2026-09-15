@@ -95,11 +95,16 @@ function Copy-DFIRAmcache {
         return $false
     }
 
-    foreach ($name in @('Amcache.hve', 'Amcache.hve.LOG1', 'Amcache.hve.LOG2', 'RecentFileCache.bcf')) {
-        $source = Join-Path $amcacheDir $name
-        if (Test-Path -LiteralPath $source -PathType Leaf) {
-            Copy-DFIRLockedFile -Context $Context -Source $source -Destination (Join-Path $dest $name) | Out-Null
-        }
+    # Amcache.hve and its transaction logs are a live registry hive, locked
+    # while Windows runs, so a live copy reliably fails. The Forensics step
+    # acquires them cleanly from a Volume Shadow Copy into 17_Execution\Amcache.
+    # Attempting the doomed live copy here only produces a misleading
+    # "locked-file copy failed" gap, so it is skipped. RecentFileCache.bcf is a
+    # normal file and is still copied live.
+    Write-DFIRLog -Context $Context -Message 'Amcache.hve is locked while Windows runs; the Forensics (VSS) step acquires it into 17_Execution\Amcache.'
+    $bcf = Join-Path $amcacheDir 'RecentFileCache.bcf'
+    if (Test-Path -LiteralPath $bcf -PathType Leaf) {
+        Copy-DFIRLockedFile -Context $Context -Source $bcf -Destination (Join-Path $dest 'RecentFileCache.bcf') | Out-Null
     }
     return $true
 }

@@ -104,7 +104,7 @@ function Export-DFIRInstalledSecurityProducts {
                 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
             )
             Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
-                Where-Object { $_.DisplayName -match 'Malwarebytes|ESET|Defender|Sophos|Symantec|McAfee|Kaspersky|Trend Micro|CrowdStrike|SentinelOne|Bitdefender|Avast|AVG|Norton|Webroot|Cylance|Carbon Black' } |
+                Where-Object { $dn = Get-DFIRObjectProperty -InputObject $_ -Name 'DisplayName'; $dn -and ($dn -match 'Malwarebytes|ESET|Defender|Sophos|Symantec|McAfee|Kaspersky|Trend Micro|CrowdStrike|SentinelOne|Bitdefender|Avast|AVG|Norton|Webroot|Cylance|Carbon Black') } |
                 Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, InstallLocation
         }) -and $success
 
@@ -167,7 +167,7 @@ function Copy-DFIRSecurityProductLogs {
                     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
                 )
                 $match = Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
-                    Where-Object { $_.DisplayName -and $_.DisplayName -match $ProductNamePattern }
+                    Where-Object { $dn = Get-DFIRObjectProperty -InputObject $_ -Name 'DisplayName'; $dn -and ($dn -match $ProductNamePattern) }
                 if ($match) { $installed = $true }
             }
             catch { }

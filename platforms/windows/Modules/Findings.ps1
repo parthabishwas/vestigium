@@ -434,7 +434,7 @@ function Get-DFIRFindingBitsJobs {
     param([Parameter(Mandatory=$true)][hashtable]$Context)
 
     $path = Join-Path $Context.Paths.Network 'BitsTransfers.csv'
-    $rows = Get-DFIRFindingCsvRows -Path $path
+    $rows = @(Get-DFIRFindingCsvRows -Path $path)
     if ($rows.Count -eq 0) { return $null }
 
     $items = New-Object System.Collections.ArrayList
@@ -442,20 +442,20 @@ function Get-DFIRFindingBitsJobs {
         $remote = [string](Get-DFIRObjectProperty -InputObject $r -Name 'RemoteName')
         $local  = [string](Get-DFIRObjectProperty -InputObject $r -Name 'LocalName')
         $state  = [string](Get-DFIRObjectProperty -InputObject $r -Name 'State')
-        $suspicious = $false
-        if ($remote -match '(?i)^https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}') { $suspicious = $true }
-        if ($local -match '(?i)\\(Temp|AppData|Users\\Public)\\') { $suspicious = $true }
-        if (-not $suspicious) { continue }
+        # High-signal only: a BITS job fetching from a raw-IP URL. Legitimate
+        # updaters (Edge, Windows components) routinely write to Temp/AppData, so
+        # a user-writable local path alone is too noisy to flag.
+        if ($remote -notmatch '(?i)^https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}') { continue }
         [void]$items.Add(('{0}  {1} -> {2}' -f $state, $remote, $local))
     }
 
     if ($items.Count -eq 0) { return $null }
 
-    return New-DFIRFinding -Id 'windows.execution.bits_jobs' -Title 'Suspicious BITS transfer jobs' `
+    return New-DFIRFinding -Id 'windows.execution.bits_jobs' -Title 'BITS transfer jobs fetching from a raw-IP URL' `
         -Severity 'medium' -Category 'execution' -Count $items.Count `
-        -Summary 'BITS jobs fetch from a raw-IP URL or write into a user-writable path, a common download / persistence channel.' `
+        -Summary 'A BITS job downloads from a bare IP address, a common malware download / persistence channel (BITS survives reboots and runs as a service).' `
         -Evidence @('08_Network/BitsTransfers.csv') -Items @($items) `
-        -Note 'BITS jobs survive reboots and run as a service; confirm the remote host and the local payload.'
+        -Note 'Confirm the remote host and the local payload; the full job list is in the evidence file.'
 }
 
 function Get-DFIRFindingCollectionSteps {

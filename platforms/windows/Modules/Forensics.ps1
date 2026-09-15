@@ -252,11 +252,31 @@ function Invoke-DFIRVssAcquire {
     [void]$lines.Add(('Generated: {0:o}' -f (Get-Date))); [void]$lines.Add('')
 
     $Context['NtfsAcquired'] = $false
+    $liveDrive = $env:SystemDrive                        # e.g. C:
+    $mftOut = Join-Path $dest 'MFT'
+    $logOut = Join-Path $dest 'LogFile'
+    $usnOut = Join-Path $dest 'UsnJrnl_J'
+
+    # --- Phase 1: NTFS metadata via esentutl.exe /y /vss. esentutl creates and
+    #     releases its OWN shadow copy per file, so it MUST run before we create
+    #     our own shadow below - two overlapping VSS operations fail with
+    #     JET_errOSSnapshotNotAllowed ("backup or recovery in progress"). NTFS
+    #     also refuses to open these metadata files by name on a snapshot, so a
+    #     raw backup-semantics handle is only a weak fallback (Phase 2). ---
+    $mftOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$MFT')     -Destination $mftOut
+    $logOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$LogFile') -Destination $logOut
+    $usnOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$Extend\$UsnJrnl:$J') -Destination $usnOut
+    # Always also take an independent live fsutil USN read.
+    [void](Export-DFIRRawUsnFallback -Context $Context -Lines $lines)
+
+    # --- Phase 2: our own shadow copy, for the registry hives (regular files,
+    #     copyable from the snapshot) and a raw fallback for any metadata file
+    #     esentutl could not get. ---
     $shadow = New-DFIRShadowCopy -Context $Context
     if (-not $shadow) {
-        [void]$lines.Add('Shadow copy: NOT AVAILABLE (VSS creation failed - see the collection log).')
-        [void]$lines.Add('$MFT, $LogFile, the USN journal and locked hives were not acquired this way.')
-        $note = Export-DFIRRawUsnFallback -Context $Context -Lines $lines   # try the live USN read anyway
+        [void]$lines.Add('Shadow copy: NOT AVAILABLE for hives (VSS creation failed - see the collection log).')
+        [void]$lines.Add(('OK/FAIL  metadata via esentutl: $MFT={0} $LogFile={1} $UsnJrnl={2}' -f $mftOk, $logOk, $usnOk))
+        if ($mftOk -or $usnOk) { $Context['NtfsAcquired'] = $true }
         Write-DFIRAcquisitionNote -Context $Context -Dest $dest -Lines $lines
         return $true   # not fatal
     }
@@ -264,44 +284,17 @@ function Invoke-DFIRVssAcquire {
     $device = $shadow.DeviceObject   # \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN
     [void]$lines.Add(('Shadow device: {0}' -f $device)); [void]$lines.Add('')
     try {
-        # NTFS metadata files. NTFS refuses to open these by name even on a
-        # snapshot, so the built-in esentutl.exe (VSS-backed) is the primary
-        # method; a raw backup-semantics handle on the snapshot is the fallback.
-        $liveDrive = $env:SystemDrive                        # e.g. C:
-        $metas = @(
-            @{ Name = '$MFT';     Rel = '\$MFT';     Live = ($liveDrive + '\$MFT') },
-            @{ Name = '$LogFile'; Rel = '\$LogFile'; Live = ($liveDrive + '\$LogFile') }
-        )
-        foreach ($m in $metas) {
-            $out = Join-Path $dest ($m.Name.TrimStart('$'))   # 21_FileSystem\MFT, \LogFile
-            if (Copy-DFIREsentutlVss -Context $Context -Source $m.Live -Destination $out) {
-                [void]$lines.Add(('OK    {0} -> {1} (esentutl /vss)' -f $m.Name, (Split-Path -Leaf $out)))
-            }
-            elseif (Copy-DFIRRawFile -Context $Context -Source ($device + $m.Rel) -Destination $out) {
-                [void]$lines.Add(('OK    {0} -> {1} (raw snapshot handle)' -f $m.Name, (Split-Path -Leaf $out)))
-            }
-            else {
-                [void]$lines.Add(('FAIL  {0} (esentutl and raw snapshot handle both failed)' -f $m.Name))
-            }
-        }
+        # Raw fallback (on our snapshot) for any metadata esentutl missed. This
+        # usually still fails - NTFS blocks opening $MFT by name even here - but
+        # it costs nothing to try.
+        if (-not $mftOk) { $mftOk = Copy-DFIRRawFile   -Context $Context -Source ($device + '\$MFT')     -Destination $mftOut }
+        if (-not $logOk) { $logOk = Copy-DFIRRawFile   -Context $Context -Source ($device + '\$LogFile') -Destination $logOut }
+        if (-not $usnOk) { $usnOk = Copy-DFIRUsnJournal -Context $Context -Source ($device + '\$Extend\$UsnJrnl:$J') -Destination $usnOut }
 
-        # USN journal: the $J data stream is sparse, so copy only its allocated
-        # ranges; always also take an independent live fsutil read.
-        $usnSrc = $device + '\$Extend\$UsnJrnl:$J'
-        $usnLive = $env:SystemDrive + '\$Extend\$UsnJrnl:$J'
-        $usnOut = Join-Path $dest 'UsnJrnl_J'
-        if (Copy-DFIREsentutlVss -Context $Context -Source $usnLive -Destination $usnOut) {
-            [void]$lines.Add('OK    $UsnJrnl:$J -> UsnJrnl_J (esentutl /vss)')
+        foreach ($pair in @(@('$MFT', $mftOk), @('$LogFile', $logOk), @('$UsnJrnl:$J', $usnOk))) {
+            if ($pair[1]) { [void]$lines.Add(('OK    {0} acquired' -f $pair[0])) }
+            else { [void]$lines.Add(('FAIL  {0} not acquired (fsutil USN read still written)' -f $pair[0])) }
         }
-        elseif (Copy-DFIRUsnJournal -Context $Context -Source $usnSrc -Destination $usnOut) {
-            [void]$lines.Add('OK    $UsnJrnl:$J -> UsnJrnl_J (allocated ranges only)')
-        }
-        else {
-            [void]$lines.Add('FAIL  $UsnJrnl:$J raw copy unavailable; using fsutil read only')
-        }
-        # Always also take an independent live fsutil read: proven, and useful
-        # even when the raw $J copied cleanly.
-        [void](Export-DFIRRawUsnFallback -Context $Context -Lines $lines)
 
         # Registry hives from the snapshot - no reg-hive load, no lock problem.
         # These drive ShellBags, UserAssist, RecentDocs and more, offline.
@@ -346,7 +339,9 @@ function Invoke-DFIRVssAcquire {
             }
         }
         [void]$lines.Add(('OK    machine hives from snapshot: {0}/4 (SAM,SECURITY,SYSTEM,SOFTWARE) -> {1}' -f $machineCount, '05_Registry\Hives_VSS\_MACHINE'))
-        $Context['NtfsAcquired'] = $true
+        # NtfsAcquired gates the "$MFT/$UsnJrnl acquired" gap wording, so key it
+        # on the metadata, not the hives.
+        $Context['NtfsAcquired'] = ($mftOk -or $usnOk)
     }
     catch {
         Write-DFIRLog -Context $Context -Level ERROR -Message ("VSS acquisition error: {0}" -f $_.Exception.Message)

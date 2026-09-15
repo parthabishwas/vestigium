@@ -10,6 +10,8 @@
 /platforms/linux/tools/setup.log
 /platforms/linux/tools/TOOLS.md
 /platforms/windows/Tools/*.exe
+/platforms/windows/Tools/*.zip
+/platforms/windows/Tools/STAGED-TOOLS.md
 
 # YARA rules: third-party repositories (own licences: DRL 1.1, GPL-2.0) and
 # everything built from them. Only the source configuration and your own

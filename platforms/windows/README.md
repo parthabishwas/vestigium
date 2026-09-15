@@ -57,13 +57,26 @@ The ZIP stores entries under the collection folder name. It is built with `Syste
 
 ## YARA rules (shared with Linux)
 
-Rules are read from `<KitRoot>\shared\yara-rules\active-rules.yar`, falling back to the legacy `Tools\YaraRules\active-rules.yar`. The scanner is `Tools\yara64.exe`. Build or refresh the shared bundle with:
+Rules are read from `<KitRoot>\shared\yara-rules\active-rules.yar`, falling back to the legacy `Tools\YaraRules\active-rules.yar`. The scanner is `Tools\yara64.exe`. `setup` builds the shared bundle **and** stages the helper binaries (see [Helper binaries](#helper-binaries) and [../../docs/OFFLINE.md](../../docs/OFFLINE.md)):
 
 ```powershell
-.\vestigium.ps1 setup                                  # kit-level setup
-.\vestigium.ps1 setup -Locked                          # rebuild exactly the commits in rules.lock
-powershell.exe -ExecutionPolicy Bypass -File .\platforms\windows\Tools\Update-YaraRules.ps1 [-Locked] [-SkipGitUpdate] [-RulesRoot <dir>] [-YaracPath <yarac>]
+.\vestigium.ps1 setup                                  # build rules + stage yara64/winpmem/Autorunsc64
+.\vestigium.ps1 setup -NoTools                          # rules only
+.\vestigium.ps1 setup -Verify                           # report readiness, change nothing
+.\vestigium.ps1 setup -Locked                           # rebuild exactly the commits in rules.lock
+powershell.exe -ExecutionPolicy Bypass -File .\platforms\windows\Tools\Update-YaraRules.ps1 [-Locked] [-SkipGitUpdate] [-RulesRoot <dir>] [-YaracPath <yarac>]  # rules builder only
 ```
+
+## Helper binaries
+
+`yara64.exe`, `yarac64.exe`, `winpmem_mini_x64*.exe` and `Autorunsc64.exe` are not shipped in
+Git (Sysinternals forbids redistribution). `setup` downloads them from their
+official vendors into `Tools\`. By default `Tools\tools.manifest.json` tracks
+each tool's **latest GitHub release** (Sysinternals uses its always-current
+URL); to freeze a reproducible kit, replace a tool's `repo`/`asset_pattern`
+with an explicit `url` and set its `sha256` (a mismatch is then rejected). On a
+fully air-gapped staging box, place the binaries in `Tools\` by hand. Any
+missing binary just makes the matching step (YARA / memory / Autoruns) skip.
 
 The builder:
 - fetches the sources in `shared\yara-rules\sources.conf` (default: `signature-base` and Yara-Rules in folder `rules`) and puts `custom\` first;

@@ -41,7 +41,7 @@ export VESTIGIUM_HOME
 LINUX_COLLECTOR=$CT_HOME/platforms/linux/vestigium-linux.sh
 LINUX_SETUP=$CT_HOME/platforms/linux/tools/setup-tools.sh
 WINDOWS_COLLECTOR=$CT_HOME/platforms/windows/vestigium-windows.ps1
-WINDOWS_SETUP=$CT_HOME/platforms/windows/Tools/Update-YaraRules.ps1
+WINDOWS_SETUP=$CT_HOME/platforms/windows/Tools/Setup-Windows.ps1
 VERIFY_SH=$CT_HOME/shared/verify-evidence.sh
 VERIFY_PS=$CT_HOME/shared/Verify-Evidence.ps1
 RULES_DIR=$CT_HOME/shared/yara-rules

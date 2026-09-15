@@ -200,6 +200,16 @@ Automation and docs:
 
 ### Offline deployment
 
+- Windows `setup` now downloads the non-redistributable helper binaries
+  (`yara64.exe`, `winpmem`, `Autorunsc64.exe`) from their official vendors into
+  `platforms\windows\Tools\`, each verified against a SHA256 pin in
+  `tools.manifest.json`. By default it tracks each tool's latest GitHub release
+  (resolved via the GitHub API), staging unpinned and recording the hash; set an
+  explicit url + sha256 to freeze and enforce a pin. They stay git-ignored. New entry
+  point `Tools\Setup-Windows.ps1` orchestrates the rule build plus the tool
+  download (`--no-tools` / `--verify` / `--force`); `Get-DFIRWindowsTools.ps1`
+  is the standalone downloader. This mirrors the Linux AVML staging model and
+  makes the Windows offline kit self-contained after one online `setup`.
 - Added [docs/OFFLINE.md](docs/OFFLINE.md): the air-gapped model (stage with
   `setup` online, collect offline with no network), host prerequisites, the
   Windows binaries to place in `Tools\` by hand, readiness checks

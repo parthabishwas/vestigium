@@ -34,9 +34,13 @@ setup  --------------> copy kit to removable media -------> collect / verify
 cache without touching the network. `./vestigium.sh setup --verify` reports
 readiness (tools, rule sources, lock status, bundle age).
 
-**Windows** (`vestigium.cmd setup`): builds the YARA rule bundle only. Three
-third-party binaries are **not** redistributed and must be placed in
-`platforms\windows\Tools\` by hand (licences forbid bundling them):
+**Windows** (`vestigium.cmd setup`): builds the YARA rule bundle **and**
+downloads the three helper binaries below from their official vendors into
+`platforms\windows\Tools\`, each verified against the SHA256 in
+`tools.manifest.json` (a mismatch is rejected). The binaries are **not**
+redistributed in Git - licences forbid it for Sysinternals - so they are
+fetched at setup time and git-ignored. On a fully air-gapped staging box (no
+internet at all) place them in `platforms\windows\Tools\` by hand instead:
 
 | Binary | Purpose | Source |
 |---|---|---|
@@ -47,6 +51,15 @@ third-party binaries are **not** redistributed and must be placed in
 Every step that uses one of these **degrades gracefully**: if the binary is
 absent the step is skipped with a logged warning and the collection continues.
 So the kit is functional without them; it is just more complete with them.
+
+By default `tools.manifest.json` tracks each tool's **latest GitHub release**
+(via `repo` + `asset_pattern`; Sysinternals uses its always-current URL), so a
+fresh `setup` stages current builds. Latest builds cannot carry a fixed hash, so
+they stage **unpinned**: the downloaded SHA256 is recorded in
+`Tools\STAGED-TOOLS.md` and a warning is printed. To **freeze** a reproducible
+kit, replace a tool's `repo`/`asset_pattern` with an explicit `url` and set its
+`sha256`; the download is then rejected on any mismatch. `setup --no-tools`
+builds rules only; `setup --verify` reports what is staged without changing it.
 
 ## Host prerequisites (cannot be shipped)
 
@@ -78,8 +91,9 @@ To refresh:
   lifecycle in [YARA-RULES.md](YARA-RULES.md).
 - **AVML:** pin a known-good build by exporting `AVML_SHA256` before `setup`; the
   download is rejected if it does not match. Override the URL with `AVML_URL`.
-- **Windows binaries:** replace the files in `platforms\windows\Tools\` with the
-  newer releases; record the versions you deployed alongside the kit.
+- **Windows binaries:** bump the `url` (and `sha256`) in
+  `platforms\windows\Tools\tools.manifest.json` and re-run `setup`, or replace
+  the files in `Tools\` by hand. `Tools\STAGED-TOOLS.md` records the staged hashes.
 
 For a reproducible field kit, pin the rules (`rules.lock` / `--rules-locked`) and
 `AVML_SHA256`, and keep `tools/TOOLS.md` with the kit so the exact toolset that

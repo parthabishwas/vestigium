@@ -1,0 +1,42 @@
+{
+  "_comment": "Windows helper binaries staged by Get-DFIRWindowsTools.ps1 during setup. They are NOT redistributed in Git (licences forbid it for Sysinternals); they are downloaded from their official vendor at setup time on an online staging box, verified, and git-ignored. Resolution: an explicit 'url' is used as-is (pinned/override); otherwise 'repo' + 'asset_pattern' resolves the LATEST GitHub release asset via the GitHub API. Pinning: set 'sha256' to the expected lower-case hash and the download is rejected on mismatch. Latest-release mode leaves 'sha256' empty (a moving target cannot be pinned); the downloaded hash is recorded in STAGED-TOOLS.md and a warning is printed. For a FROZEN, reproducible kit, after one staging set the tool's 'url' to the resolved download URL and 'sha256' to the staged hash. 'name' must match what the collector looks for and must not be changed.",
+  "tools": [
+    {
+      "name": "yara64.exe",
+      "purpose": "YARA scanning engine",
+      "type": "zip",
+      "member": "yara64.exe",
+      "repo": "VirusTotal/yara",
+      "asset_pattern": "win64\\.zip$",
+      "sha256": "",
+      "note": "Latest YARA Windows release; the zip contains yara64.exe and yarac64.exe. To freeze, set 'url' + 'sha256' instead of 'repo'/'asset_pattern'."
+    },
+    {
+      "name": "yarac64.exe",
+      "purpose": "YARA rule compiler (enables setup's compile validation)",
+      "type": "zip",
+      "member": "yarac64.exe",
+      "repo": "VirusTotal/yara",
+      "asset_pattern": "win64\\.zip$",
+      "sha256": "",
+      "note": "Same YARA release zip as yara64.exe; used by Update-YaraRules.ps1 to compile-check the bundle."
+    },
+    {
+      "name": "winpmem_mini_x64.exe",
+      "purpose": "Physical memory acquisition (-CaptureMemory)",
+      "type": "exe",
+      "repo": "Velocidex/WinPmem",
+      "asset_pattern": "^winpmem_mini_x64.*\\.exe$",
+      "sha256": "",
+      "note": "Latest Velocidex WinPmem release (Apache-2.0). To freeze, set 'url' + 'sha256'."
+    },
+    {
+      "name": "Autorunsc64.exe",
+      "purpose": "Autoruns persistence enumeration",
+      "type": "exe",
+      "url": "https://live.sysinternals.com/Autorunsc64.exe",
+      "sha256": "",
+      "note": "Microsoft Sysinternals. Redistribution is prohibited by its EULA, so it is fetched from Microsoft here and never committed. live.sysinternals.com always serves the current build; a pinned sha256 needs updating when Microsoft ships a new one."
+    }
+  ]
+}

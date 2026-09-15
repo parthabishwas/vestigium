@@ -78,7 +78,7 @@ if (Test-Path -LiteralPath $versionFile -PathType Leaf) {
 
 $paths = @{
     WindowsCollector = Join-Path (Join-Path (Join-Path $KitRoot 'platforms') 'windows') 'vestigium-windows.ps1'
-    WindowsSetup     = Join-Path (Join-Path (Join-Path (Join-Path $KitRoot 'platforms') 'windows') 'Tools') 'Update-YaraRules.ps1'
+    WindowsSetup     = Join-Path (Join-Path (Join-Path (Join-Path $KitRoot 'platforms') 'windows') 'Tools') 'Setup-Windows.ps1'
     LinuxCollector   = Join-Path (Join-Path (Join-Path $KitRoot 'platforms') 'linux') 'vestigium-linux.sh'
     LinuxSetup       = Join-Path (Join-Path (Join-Path (Join-Path $KitRoot 'platforms') 'linux') 'tools') 'setup-tools.sh'
     Verifier         = Join-Path (Join-Path $KitRoot 'shared') 'Verify-Evidence.ps1'

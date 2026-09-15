@@ -1,12 +1,12 @@
 <!doctype html>
 <!--
-  Vestigium findings report - self-contained, offline.
+  Vestigium findings report - self-contained, offline, no network access.
 
   This is a template. A collector produces the real report by replacing the
   placeholder content of the #vestigium-findings script element (a single
   underscore-delimited token) with the run's findings JSON, escaping the three
-  characters < > & first so the data cannot close the script element. See
-  docs/FINDINGS-SCHEMA.md. No network access is required to view this file.
+  characters < > & first (as < > &) so the data cannot close the
+  script element. See docs/FINDINGS-SCHEMA.md.
 -->
 <html lang="en">
 <head>
@@ -15,123 +15,268 @@
 <title>Vestigium findings</title>
 <style>
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --ink: #1b2733; --muted: #5b6b7b;
-    --line: #e2e6ea; --accent: #b45309;
-    --crit: #b91c1c; --high: #c2410c; --med: #b45309; --low: #2563eb; --info: #4b5563;
-    --crit-bg: #fbeaea; --high-bg: #fbeee6; --med-bg: #fbf3e2; --low-bg: #e9f0fd; --info-bg: #eef1f4;
+    --bg: #eef1f5; --bg2: #e6eaf0; --panel: #ffffff; --panel2: #f7f9fc;
+    --ink: #16202b; --ink2: #33404d; --muted: #647383; --faint: #93a1b0;
+    --line: #e0e5eb; --line2: #eef1f5; --accent: #b45309; --accent-ink: #7c3a06;
+    --shadow: 0 1px 2px rgba(16,32,48,.05), 0 6px 20px rgba(16,32,48,.06);
+    --crit: #c02626; --high: #d4600f; --med: #b8860b; --low: #2563eb; --info: #64748b;
+    --crit-bg: #fbe9e9; --high-bg: #fbeee1; --med-bg: #f8f0d8; --low-bg: #e7effd; --info-bg: #eef1f5;
+    --crit-dot: #dc2626; --high-dot: #ea700f; --med-dot: #ca9a09; --low-dot: #3b82f6; --info-dot: #94a3b8;
+    --ok: #15803d; --ok-bg: #e6f4ea;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0f141a; --panel: #161c24; --ink: #e6ebf0; --muted: #93a1b0;
-      --line: #263039; --accent: #f59e0b;
-      --crit: #f87171; --high: #fb923c; --med: #fbbf24; --low: #60a5fa; --info: #9ca3af;
-      --crit-bg: #2a1414; --high-bg: #2a1c11; --med-bg: #29220f; --low-bg: #131f33; --info-bg: #1a2029;
+      --bg: #0c1116; --bg2: #0f151c; --panel: #151c25; --panel2: #1a222d;
+      --ink: #e8edf3; --ink2: #c7d2de; --muted: #93a1b0; --faint: #6b7a89;
+      --line: #263039; --line2: #1e2731; --accent: #f59e0b; --accent-ink: #fbbf24;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.28);
+      --crit: #f87171; --high: #fb923c; --med: #fbbf24; --low: #60a5fa; --info: #94a3b8;
+      --crit-bg: #2c1414; --high-bg: #2c1d0f; --med-bg: #2a220d; --low-bg: #12203a; --info-bg: #1a222d;
+      --crit-dot: #ef4444; --high-dot: #f97316; --med-dot: #eab308; --low-dot: #3b82f6; --info-dot: #64748b;
+      --ok: #4ade80; --ok-bg: #10241a;
     }
   }
   * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 14.5px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 18px 64px; }
-  header.top { border-bottom: 2px solid var(--accent); padding-bottom: 14px; margin-bottom: 18px; }
-  h1 { margin: 0 0 2px; font-size: 22px; letter-spacing: .3px; }
-  h1 small { color: var(--muted); font-weight: 400; font-size: 13px; }
-  .meta { display: flex; flex-wrap: wrap; gap: 6px 22px; color: var(--muted); font-size: 13px; margin-top: 8px; }
-  .meta b { color: var(--ink); font-weight: 600; }
-  .banner { margin: 12px 0 0; padding: 8px 12px; border-radius: 6px; background: var(--high-bg);
-            border: 1px solid var(--line); color: var(--high); font-weight: 600; }
-  .tiles { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 8px; }
-  .tile { flex: 1 1 120px; background: var(--panel); border: 1px solid var(--line);
-          border-radius: 8px; padding: 10px 12px; cursor: pointer; user-select: none; }
-  .tile:focus-visible { outline: 2px solid var(--accent); }
-  .tile .n { font-size: 26px; font-weight: 700; line-height: 1; }
-  .tile .l { text-transform: uppercase; letter-spacing: .6px; font-size: 11px; color: var(--muted); margin-top: 4px; }
-  .tile[aria-pressed="false"] { opacity: .45; }
-  .tile.c-crit .n { color: var(--crit); } .tile.c-high .n { color: var(--high); }
-  .tile.c-med .n { color: var(--med); } .tile.c-low .n { color: var(--low); } .tile.c-info .n { color: var(--info); }
-  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 16px; }
-  .controls input { flex: 1 1 220px; padding: 7px 10px; border: 1px solid var(--line);
-                    border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 13px; }
-  .controls button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px;
-                     background: var(--panel); color: var(--ink); cursor: pointer; font-size: 13px; }
-  .finding { background: var(--panel); border: 1px solid var(--line); border-left-width: 4px;
-             border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 0 20px 72px; }
+
+  /* Header */
+  header.top {
+    position: sticky; top: 0; z-index: 20; margin: 0 -20px 0; padding: 14px 20px 13px;
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: saturate(1.4) blur(8px); -webkit-backdrop-filter: saturate(1.4) blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .brandrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .mark { width: 30px; height: 30px; flex: 0 0 auto; }
+  .title { display: flex; flex-direction: column; line-height: 1.15; }
+  .title .t1 { font-size: 17px; font-weight: 700; letter-spacing: .2px; }
+  .title .t2 { font-size: 12px; color: var(--muted); }
+  .riskpill {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12.5px; font-weight: 700; letter-spacing: .3px; padding: 6px 13px; border-radius: 999px;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .riskpill .rdot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .riskpill.r-critical { color: var(--crit); background: var(--crit-bg); border-color: color-mix(in srgb, var(--crit) 30%, transparent); }
+  .riskpill.r-high { color: var(--high); background: var(--high-bg); border-color: color-mix(in srgb, var(--high) 30%, transparent); }
+  .riskpill.r-medium { color: var(--med); background: var(--med-bg); border-color: color-mix(in srgb, var(--med) 30%, transparent); }
+  .riskpill.r-low { color: var(--low); background: var(--low-bg); border-color: color-mix(in srgb, var(--low) 30%, transparent); }
+  .riskpill.r-info, .riskpill.r-clean { color: var(--ok); background: var(--ok-bg); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+
+  .banner { margin: 14px 0 0; padding: 10px 14px; border-radius: 9px; background: var(--high-bg);
+            border: 1px solid color-mix(in srgb, var(--high) 34%, transparent); color: var(--high);
+            font-weight: 600; font-size: 13px; }
+
+  /* Overview */
+  .overview { display: grid; grid-template-columns: 260px 1fr; gap: 16px; margin: 20px 0 6px; }
+  @media (max-width: 720px) { .overview { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+  .card.pad { padding: 16px 18px; }
+  .cardhd { font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; }
+
+  .donutwrap { display: flex; align-items: center; gap: 16px; }
+  .donut { position: relative; width: 118px; height: 118px; flex: 0 0 auto; }
+  .donut svg { width: 118px; height: 118px; transform: rotate(-90deg); }
+  .donut .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .donut .center .big { font-size: 27px; font-weight: 800; line-height: 1; }
+  .donut .center .lbl { font-size: 10px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); margin-top: 3px; }
+  .legend { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1 1 auto; }
+  .legend .row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+  .legend .row:hover { background: var(--panel2); }
+  .legend .row.off { opacity: .4; }
+  .legend .sw { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+  .legend .nm { color: var(--ink2); text-transform: capitalize; }
+  .legend .ct { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--ink); }
+
+  .cats { display: flex; flex-direction: column; gap: 9px; }
+  .catrow { display: grid; grid-template-columns: 130px 1fr 34px; align-items: center; gap: 10px; font-size: 12.5px; }
+  .catrow .cnm { color: var(--ink2); text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .catrow .bar { height: 9px; border-radius: 999px; background: var(--line2); overflow: hidden; }
+  .catrow .bar > span { display: block; height: 100%; border-radius: 999px; }
+  .catrow .cct { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--ink); }
+  .catempty { color: var(--muted); font-size: 13px; }
+
+  .summ { margin: 4px 2px 0; color: var(--ink2); font-size: 13.5px; }
+  .summ b { color: var(--ink); }
+
+  /* Toolbar */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 20px 0 14px; }
+  .search { position: relative; flex: 1 1 260px; }
+  .search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  .search input { width: 100%; padding: 9px 12px 9px 34px; border: 1px solid var(--line); border-radius: 9px;
+                  background: var(--panel); color: var(--ink); font-size: 13.5px; }
+  .search input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 6px 11px;
+          border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--ink2);
+          cursor: pointer; user-select: none; }
+  .chip .cdot { width: 7px; height: 7px; border-radius: 50%; }
+  .chip[aria-pressed="false"] { opacity: .42; }
+  .chip.c-critical { border-color: color-mix(in srgb, var(--crit) 40%, var(--line)); }
+  .chip.c-high { border-color: color-mix(in srgb, var(--high) 40%, var(--line)); }
+  .btns { display: flex; gap: 6px; margin-left: auto; }
+  .btns button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+                 color: var(--ink2); cursor: pointer; font-size: 12.5px; font-weight: 600; }
+  .btns button:hover { background: var(--panel2); color: var(--ink); }
+
+  /* Findings */
+  #list { display: flex; flex-direction: column; gap: 10px; }
+  .finding { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--info);
+             border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; scroll-margin-top: 74px; }
   .finding.s-critical { border-left-color: var(--crit); }
   .finding.s-high { border-left-color: var(--high); }
   .finding.s-medium { border-left-color: var(--med); }
   .finding.s-low { border-left-color: var(--low); }
   .finding.s-info { border-left-color: var(--info); }
-  .fhead { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; cursor: pointer; }
-  .fhead h3 { margin: 0; font-size: 15px; font-weight: 600; }
-  .fhead .sum { color: var(--muted); font-size: 13px; margin-top: 2px; }
-  .sev { flex: 0 0 auto; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
-         padding: 3px 8px; border-radius: 999px; }
+  .fhead { display: flex; align-items: center; gap: 13px; padding: 13px 16px; cursor: pointer; }
+  .fhead:hover { background: var(--panel2); }
+  .sev { flex: 0 0 auto; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px;
+         padding: 4px 9px; border-radius: 999px; min-width: 64px; text-align: center; }
   .sev.s-critical { color: var(--crit); background: var(--crit-bg); }
   .sev.s-high { color: var(--high); background: var(--high-bg); }
   .sev.s-medium { color: var(--med); background: var(--med-bg); }
   .sev.s-low { color: var(--low); background: var(--low-bg); }
   .sev.s-info { color: var(--info); background: var(--info-bg); }
   .grow { flex: 1 1 auto; min-width: 0; }
-  .cat { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
-  .fbody { padding: 0 14px 14px; display: none; }
+  .fhead h3 { margin: 0; font-size: 14.5px; font-weight: 650; letter-spacing: .1px; }
+  .fhead .sum { color: var(--muted); font-size: 12.5px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .finding.open .fhead .sum { white-space: normal; }
+  .fmeta { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
+  .cat { font-size: 11.5px; color: var(--muted); text-transform: capitalize; }
+  .cbadge { font-size: 11px; font-weight: 700; color: var(--ink2); background: var(--panel2); border: 1px solid var(--line);
+            border-radius: 999px; padding: 2px 8px; font-variant-numeric: tabular-nums; }
+  .chev { color: var(--faint); transition: transform .15s ease; flex: 0 0 auto; }
+  .finding.open .chev { transform: rotate(90deg); }
+  .fbody { padding: 0 16px 16px 33px; display: none; }
   .finding.open .fbody { display: block; }
-  .fbody .detail { color: var(--muted); margin: 0 0 8px; }
-  .kv { font-size: 12px; color: var(--muted); margin: 6px 0; }
-  .kv code { color: var(--ink); word-break: break-all; }
-  pre.items { background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
-              padding: 8px 10px; overflow-x: auto; font-size: 12.5px; margin: 6px 0 0;
+  .fbody .detail { color: var(--ink2); margin: 0 0 10px; }
+  .kv { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+  .kv b { color: var(--ink2); font-weight: 650; }
+  .kv code, .evlist code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); word-break: break-all; }
+  .evlist { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .evlist li { font-size: 12px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 7px; padding: 5px 9px; }
+  pre.items { background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px;
+              overflow-x: auto; font-size: 12.5px; margin: 10px 0 0; line-height: 1.5;
               font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .note { font-size: 12px; color: var(--accent); margin-top: 8px; }
-  .empty { text-align: center; color: var(--muted); padding: 40px 0; }
-  section.gaps { margin-top: 26px; }
-  section.gaps h2 { font-size: 15px; margin: 0 0 8px; }
-  section.gaps ul { margin: 0; padding-left: 18px; color: var(--muted); }
-  footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--line);
-           color: var(--muted); font-size: 12px; }
+  .note { font-size: 12px; color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 8%, transparent);
+          border-left: 3px solid var(--accent); padding: 7px 11px; border-radius: 0 7px 7px 0; margin-top: 10px; }
+  .idtag { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--faint); }
+
+  .empty { text-align: center; color: var(--muted); padding: 52px 0; }
+  .empty .big { font-size: 15px; color: var(--ink2); font-weight: 600; margin-bottom: 4px; }
+
+  section.gaps { margin-top: 28px; }
+  section.gaps .card { padding: 16px 18px; border-left: 4px solid var(--med); }
+  section.gaps ul { margin: 0; padding-left: 18px; color: var(--ink2); }
+  section.gaps li { margin: 4px 0; }
+
+  footer { margin-top: 30px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  footer code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink2); }
+  footer .disc { margin-bottom: 6px; }
   a { color: var(--low); }
+
   @media print {
-    body { background: #fff; color: #000; }
-    .controls, .tiles { display: none; }
-    .finding, .tile { break-inside: avoid; }
+    body { background: #fff; color: #000; font-size: 11px; }
+    header.top { position: static; backdrop-filter: none; }
+    .toolbar, .chev, .riskpill .rdot { display: none; }
+    .card, .finding { box-shadow: none; break-inside: avoid; }
     .fbody { display: block !important; }
+    .finding { border: 1px solid #ccc; border-left-width: 4px; }
   }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header class="top">
-    <h1>Vestigium findings <small id="h-sub"></small></h1>
-    <div class="meta" id="h-meta"></div>
+    <div class="brandrow">
+      <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="1.5" y="1.5" width="29" height="29" rx="8" fill="var(--accent)" opacity="0.14"/>
+        <rect x="1.5" y="1.5" width="29" height="29" rx="8" stroke="var(--accent)" stroke-width="1.5" opacity="0.5"/>
+        <path d="M8 10.5c2.4 3.2 4.2 6 5.7 9.4M13.7 19.9c1.6-3.6 4-6.9 7.3-9.9M11 24c1-1.6 2.6-2.6 4.6-2.6" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="21.4" cy="10.4" r="2" fill="var(--accent)"/>
+      </svg>
+      <div class="title">
+        <span class="t1">Vestigium findings</span>
+        <span class="t2" id="h-sub"></span>
+      </div>
+      <span class="riskpill r-clean" id="h-risk" hidden><span class="rdot"></span><span id="h-risk-t"></span></span>
+    </div>
     <div class="banner" id="h-banner" hidden></div>
   </header>
 
-  <div class="tiles" id="tiles"></div>
+  <div class="summ" id="h-summary"></div>
 
-  <div class="controls">
-    <input id="q" type="search" placeholder="Filter by text, category or id...">
-    <button id="expand" type="button">Expand all</button>
-    <button id="collapse" type="button">Collapse all</button>
-    <button id="print" type="button">Print</button>
+  <div class="overview">
+    <div class="card pad">
+      <div class="cardhd">Severity</div>
+      <div class="donutwrap">
+        <div class="donut">
+          <svg id="donut" viewBox="0 0 42 42" aria-hidden="true"></svg>
+          <div class="center"><span class="big" id="donut-total">0</span><span class="lbl">findings</span></div>
+        </div>
+        <div class="legend" id="legend"></div>
+      </div>
+    </div>
+    <div class="card pad">
+      <div class="cardhd">By category</div>
+      <div class="cats" id="cats"></div>
+    </div>
+  </div>
+
+  <div class="meta-strip card pad" id="h-meta-card" style="margin-top:16px; display:none;">
+    <div class="cardhd">Collection</div>
+    <div class="meta" id="h-meta"></div>
+  </div>
+
+  <div class="toolbar">
+    <label class="search">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="q" type="search" placeholder="Filter by text, category or id...">
+    </label>
+    <div class="chips" id="chips"></div>
+    <div class="btns">
+      <button id="expand" type="button">Expand all</button>
+      <button id="collapse" type="button">Collapse all</button>
+      <button id="print" type="button">Print</button>
+    </div>
   </div>
 
   <div id="list"></div>
 
   <section class="gaps" id="gaps" hidden>
-    <h2>Collection gaps affecting negative findings</h2>
-    <ul id="gaps-list"></ul>
+    <div class="card">
+      <div class="cardhd" style="margin-bottom:8px;">Collection gaps affecting negative findings</div>
+      <ul id="gaps-list"></ul>
+    </div>
   </section>
 
   <footer id="foot"></footer>
 </div>
+
+<style>
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 26px; color: var(--muted); font-size: 13px; }
+  .meta b { color: var(--ink2); font-weight: 650; }
+</style>
 
 <script id="vestigium-findings" type="application/json">__VESTIGIUM_FINDINGS_JSON__</script>
 <script>
 (function () {
   "use strict";
   var SEV = ["critical", "high", "medium", "low", "info"];
+  var SEV_LABEL = { critical: "Critical", high: "High", medium: "Medium", low: "Low", info: "Info" };
   var el = function (id) { return document.getElementById(id); };
   var text = function (s) { return (s === null || s === undefined) ? "" : String(s); };
+  function escapeHtml(s) {
+    return text(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
 
   var data;
   try {
@@ -139,77 +284,176 @@
     if (!data || data.placeholder || !data.schema) { throw new Error("no data"); }
   } catch (e) {
     document.querySelector(".wrap").innerHTML =
-      '<div class="empty"><h1>Vestigium findings</h1>' +
-      '<p>This is the report template. Open the <code>findings.html</code> from a collection instead.</p></div>';
+      '<div class="empty" style="padding-top:80px"><div class="big">Vestigium findings report</div>' +
+      '<p>This is the report template. Open the <code>findings.html</code> produced by a collection instead.</p></div>';
     return;
   }
 
   var findings = Array.isArray(data.findings) ? data.findings.slice() : [];
   var order = {}; SEV.forEach(function (s, i) { order[s] = i; });
+  function normSev(s) { return SEV.indexOf(s) === -1 ? "info" : s; }
   findings.sort(function (a, b) {
-    var d = (order[a.severity] || 9) - (order[b.severity] || 9);
+    var d = (order[normSev(a.severity)]) - (order[normSev(b.severity)]);
     return d !== 0 ? d : (b.count || 0) - (a.count || 0);
   });
+  findings.forEach(function (f, i) { f.__i = i; });
 
-  // Header
+  // Counts: prefer data.counts, else compute.
+  var counts = {}; SEV.forEach(function (s) { counts[s] = 0; });
+  if (data.counts) { SEV.forEach(function (s) { counts[s] = data.counts[s] || 0; }); }
+  else { findings.forEach(function (f) { counts[normSev(f.severity)]++; }); }
+  var total = SEV.reduce(function (a, s) { return a + counts[s]; }, 0);
+
   var host = data.host || {}, col = data.collection || {};
-  el("h-sub").textContent = host.hostname ? "— " + host.hostname : "";
-  var meta = [
-    ["Case", data.case_id], ["Host", host.hostname], ["Platform", host.platform],
-    ["OS", host.os], ["Collector", col.collector_version], ["Status", col.status],
-    ["Generated", data.generated_utc]
-  ];
-  el("h-meta").innerHTML = meta.filter(function (m) { return text(m[1]); })
-    .map(function (m) { return "<span><b>" + m[0] + ":</b> " + escapeHtml(m[1]) + "</span>"; }).join("");
-  if (col.status === "interrupted") {
-    var b = el("h-banner"); b.hidden = false;
-    b.textContent = "This collection was INTERRUPTED - findings cover only what was collected.";
+  el("h-sub").textContent = [host.hostname, host.os, data.case_id ? "Case " + data.case_id : ""]
+    .filter(function (x) { return text(x); }).join("  ·  ");
+
+  // Risk pill from highest severity present.
+  var highest = SEV.filter(function (s) { return counts[s] > 0 && s !== "info"; })[0];
+  var rp = el("h-risk"), rt = el("h-risk-t");
+  rp.hidden = false;
+  if (!highest) {
+    rp.className = "riskpill r-clean";
+    rt.textContent = total ? "No suspicious findings" : "No findings";
+  } else {
+    rp.className = "riskpill r-" + highest;
+    var msg = { critical: "Critical - act now", high: "High priority", medium: "Review needed", low: "Low risk" };
+    rt.textContent = msg[highest] || "Review needed";
   }
 
-  // Severity tiles (also act as filters)
-  var counts = data.counts || {};
+  if (col.status === "interrupted") {
+    var b = el("h-banner"); b.hidden = false;
+    b.textContent = "⚠  This collection was INTERRUPTED - findings cover only what was collected.";
+  }
+
+  // Executive summary line.
+  var sev_bits = SEV.filter(function (s) { return counts[s] > 0; })
+    .map(function (s) { return '<b>' + counts[s] + '</b> ' + s; });
+  var summ = el("h-summary");
+  if (total) {
+    summ.innerHTML = "This package holds " + sev_bits.join(", ") +
+      (sev_bits.length > 1 ? "" : "") + " finding" + (total === 1 ? "" : "s") +
+      ". Findings are automated leads to prioritise review, each linked to its raw artifact.";
+  } else {
+    summ.innerHTML = "The collection produced no triage findings. This is not proof of a clean host; review the raw evidence and any collection gaps below.";
+  }
+
+  // Metadata card.
+  var meta = [
+    ["Host", host.hostname], ["Platform", host.platform], ["OS", host.os],
+    ["Case", data.case_id], ["Collector", "Vestigium " + text(col.collector_version)],
+    ["Status", col.status], ["Duration", col.duration_seconds ? col.duration_seconds + " s" : ""],
+    ["Generated", data.generated_utc]
+  ].filter(function (m) { return text(m[1]); });
+  if (meta.length) {
+    el("h-meta-card").style.display = "block";
+    el("h-meta").innerHTML = meta.map(function (m) {
+      return "<span><b>" + escapeHtml(m[0]) + ":</b> " + escapeHtml(m[1]) + "</span>";
+    }).join("");
+  }
+
+  // Donut (SVG stroke-dasharray segments on a 42x42 / r=15.915 ring => circumference 100).
   var active = {}; SEV.forEach(function (s) { active[s] = true; });
-  el("tiles").innerHTML = SEV.map(function (s) {
-    var n = counts[s] || 0;
-    return '<div class="tile c-' + s.slice(0, 4) + '" role="button" tabindex="0" data-sev="' + s +
-      '" aria-pressed="true"><div class="n">' + n + '</div><div class="l">' + s + '</div></div>';
+  el("donut-total").textContent = total;
+  var donut = el("donut");
+  var C = 100, r = 15.915, cx = 21, cy = 21;
+  var svg = '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="var(--line)" stroke-width="5"/>';
+  if (total) {
+    var acc = 0;
+    SEV.forEach(function (s) {
+      if (!counts[s]) { return; }
+      var frac = counts[s] / total * C;
+      svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" ' +
+        'stroke="var(--' + s.slice(0, 4) + '-dot)" stroke-width="5" ' +
+        'stroke-dasharray="' + frac.toFixed(2) + ' ' + (C - frac).toFixed(2) + '" ' +
+        'stroke-dashoffset="' + (-acc).toFixed(2) + '"><\/circle>';
+      acc += frac;
+    });
+  }
+  donut.innerHTML = svg;
+
+  // Legend (clickable severity filter, mirrors chips).
+  el("legend").innerHTML = SEV.map(function (s) {
+    return '<div class="row" data-sev="' + s + '"><span class="sw" style="background:var(--' + s.slice(0, 4) + '-dot)"></span>' +
+      '<span class="nm">' + s + '</span><span class="ct">' + counts[s] + '</span></div>';
+  }).join("");
+
+  // Category breakdown.
+  var catMap = {};
+  findings.forEach(function (f) {
+    var c = text(f.category) || "other";
+    catMap[c] = (catMap[c] || 0) + 1;
+  });
+  var cats = Object.keys(catMap).sort(function (a, b) { return catMap[b] - catMap[a]; });
+  var catMax = cats.reduce(function (m, c) { return Math.max(m, catMap[c]); }, 1);
+  // colour a category bar by the highest severity finding it contains
+  var catSev = {};
+  findings.forEach(function (f) {
+    var c = text(f.category) || "other", s = normSev(f.severity);
+    if (catSev[c] === undefined || order[s] < order[catSev[c]]) { catSev[c] = s; }
+  });
+  if (cats.length) {
+    el("cats").innerHTML = cats.map(function (c) {
+      var pct = Math.max(6, Math.round(catMap[c] / catMax * 100));
+      var col = "var(--" + (catSev[c] || "info").slice(0, 4) + "-dot)";
+      return '<div class="catrow"><span class="cnm" title="' + escapeHtml(c) + '">' + escapeHtml(c) + '</span>' +
+        '<span class="bar"><span style="width:' + pct + '%;background:' + col + '"></span></span>' +
+        '<span class="cct">' + catMap[c] + '</span></div>';
+    }).join("");
+  } else {
+    el("cats").innerHTML = '<div class="catempty">No categorised findings.</div>';
+  }
+
+  // Severity filter chips.
+  el("chips").innerHTML = SEV.map(function (s) {
+    return '<span class="chip c-' + s + '" role="button" tabindex="0" data-sev="' + s + '" aria-pressed="true">' +
+      '<span class="cdot" style="background:var(--' + s.slice(0, 4) + '-dot)"></span>' + s + ' ' + counts[s] + '</span>';
   }).join("");
 
   var q = el("q");
   function render() {
     var term = q.value.trim().toLowerCase();
-    var host = el("list");
+    var listHost = el("list");
     var shown = findings.filter(function (f) {
-      if (!active[f.severity]) { return false; }
+      if (!active[normSev(f.severity)]) { return false; }
       if (!term) { return true; }
       var hay = [f.title, f.summary, f.detail, f.category, f.id].concat(f.items || []).join(" ").toLowerCase();
       return hay.indexOf(term) !== -1;
     });
     if (!shown.length) {
-      host.innerHTML = '<div class="empty">No findings match the current filter.' +
-        (findings.length ? "" : " The collection produced no triage findings.") + "</div>";
+      listHost.innerHTML = '<div class="card"><div class="empty"><div class="big">' +
+        (findings.length ? "No findings match the current filter" : "No triage findings") + '</div>' +
+        (findings.length ? "<p>Adjust the search or severity filters above.</p>"
+                         : "<p>The collection produced no automated findings. Review the raw evidence directly.</p>") +
+        '</div></div>';
       return;
     }
-    host.innerHTML = shown.map(renderFinding).join("");
+    listHost.innerHTML = shown.map(renderFinding).join("");
   }
 
   function renderFinding(f) {
-    var sev = SEV.indexOf(f.severity) === -1 ? "info" : f.severity;
-    var ev = (f.evidence || []).map(function (p) { return "<code>" + escapeHtml(p) + "</code>"; }).join("<br>");
+    var sev = normSev(f.severity);
+    var ev = (f.evidence || []).map(function (p) { return "<li><code>" + escapeHtml(p) + "</code></li>"; }).join("");
     var items = (f.items || []).map(escapeHtml).join("\n");
     var more = (f.count || 0) > (f.items || []).length
       ? "\n... " + ((f.count || 0) - (f.items || []).length) + " more (see the evidence file)" : "";
     var body =
       (text(f.detail) ? '<p class="detail">' + escapeHtml(f.detail) + "</p>" : "") +
-      '<div class="kv"><b>Count:</b> ' + (f.count || 0) + " &nbsp; <b>ID:</b> <code>" + escapeHtml(f.id) + "</code></div>" +
-      (ev ? '<div class="kv"><b>Evidence:</b><br>' + ev + "</div>" : "") +
+      (ev ? '<div class="kv"><b>Evidence</b></div><ul class="evlist">' + ev + "</ul>" : "") +
       (items ? '<pre class="items">' + items + escapeHtml(more) + "</pre>" : "") +
-      (text(f.note) ? '<div class="note">' + escapeHtml(f.note) + "</div>" : "");
-    return '<div class="finding s-' + sev + '">' +
-      '<div class="fhead"><span class="sev s-' + sev + '">' + sev + "</span>" +
-      '<div class="grow"><h3>' + escapeHtml(f.title) + "</h3>" +
-      '<div class="sum">' + escapeHtml(f.summary) + "</div></div>" +
-      '<span class="cat">' + escapeHtml(f.category || "") + " &middot; " + (f.count || 0) + "</span></div>" +
+      (text(f.note) ? '<div class="note">' + escapeHtml(f.note) + "</div>" : "") +
+      '<div class="kv"><span class="idtag">' + escapeHtml(f.id || "") + "</span></div>";
+    return '<div class="finding s-' + sev + '" id="f-' + f.__i + '">' +
+      '<div class="fhead">' +
+        '<span class="sev s-' + sev + '">' + SEV_LABEL[sev] + "</span>" +
+        '<div class="grow"><h3>' + escapeHtml(f.title) + "</h3>" +
+        '<div class="sum">' + escapeHtml(f.summary) + "</div></div>" +
+        '<div class="fmeta">' +
+          '<span class="cat">' + escapeHtml(f.category || "") + "</span>" +
+          '<span class="cbadge">' + (f.count || 0) + "</span>" +
+          '<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>' +
+        "</div>" +
+      "</div>" +
       '<div class="fbody">' + body + "</div></div>";
   }
 
@@ -217,15 +461,22 @@
   el("list").addEventListener("click", function (e) {
     var h = e.target.closest(".fhead"); if (h) { h.parentNode.classList.toggle("open"); }
   });
-  function toggleTile(t) {
-    var s = t.getAttribute("data-sev"); active[s] = !active[s];
-    t.setAttribute("aria-pressed", active[s] ? "true" : "false"); render();
+  function setChip(s, on) {
+    active[s] = on;
+    var chip = document.querySelector('.chip[data-sev="' + s + '"]');
+    if (chip) { chip.setAttribute("aria-pressed", on ? "true" : "false"); }
+    var row = document.querySelector('.legend .row[data-sev="' + s + '"]');
+    if (row) { row.classList.toggle("off", !on); }
   }
-  el("tiles").addEventListener("click", function (e) {
-    var t = e.target.closest(".tile"); if (t) { toggleTile(t); }
+  function toggleSev(s) { setChip(s, !active[s]); render(); }
+  el("chips").addEventListener("click", function (e) {
+    var t = e.target.closest(".chip"); if (t) { toggleSev(t.getAttribute("data-sev")); }
   });
-  el("tiles").addEventListener("keydown", function (e) {
-    if (e.key === "Enter" || e.key === " ") { var t = e.target.closest(".tile"); if (t) { e.preventDefault(); toggleTile(t); } }
+  el("chips").addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { var t = e.target.closest(".chip"); if (t) { e.preventDefault(); toggleSev(t.getAttribute("data-sev")); } }
+  });
+  el("legend").addEventListener("click", function (e) {
+    var row = e.target.closest(".row[data-sev]"); if (row) { toggleSev(row.getAttribute("data-sev")); }
   });
   q.addEventListener("input", render);
   el("expand").addEventListener("click", function () {
@@ -236,22 +487,18 @@
   });
   el("print").addEventListener("click", function () { window.print(); });
 
-  // Gaps and notes
+  // Gaps and footer.
   var gaps = Array.isArray(data.gaps) ? data.gaps : [];
   if (gaps.length) {
     el("gaps").hidden = false;
     el("gaps-list").innerHTML = gaps.map(function (g) { return "<li>" + escapeHtml(g) + "</li>"; }).join("");
   }
   var notes = (Array.isArray(data.notes) ? data.notes : []).map(escapeHtml).join(" ");
-  el("foot").innerHTML = (notes || "Automated observations to prioritise review, not conclusions.") +
-    "<br>Generated by Vestigium " + escapeHtml(col.collector_version || "") +
-    ". Evidence root: <code>" + escapeHtml(col.evidence_root || "") + "</code>.";
+  el("foot").innerHTML =
+    '<div class="disc">' + (notes || "Automated observations to prioritise review, not conclusions.") + "</div>" +
+    "Generated by Vestigium " + escapeHtml(col.collector_version || "") +
+    (col.evidence_root ? ". Evidence root: <code>" + escapeHtml(col.evidence_root) + "</code>" : "") + ".";
 
-  function escapeHtml(s) {
-    return text(s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
   render();
 })();
 </script>

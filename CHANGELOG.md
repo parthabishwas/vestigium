@@ -107,6 +107,15 @@ Automation and docs:
 
 ### Findings report (both platforms)
 
+- The report UI was rebuilt for a modern, professional look: a sticky header
+  with a derived risk banner (highest severity present), an executive summary
+  line, an SVG severity donut with a clickable legend, a category breakdown
+  bar chart coloured by worst severity, a collection-metadata card, and
+  severity filter chips alongside the text search. Finding cards gained count
+  badges, evidence shown as monospace chips, and a callout style for caveats.
+  Still a single self-contained offline file, same JSON schema and safe
+  embedding contract, dark-mode and print styles, and the same template token.
+
 - Every collection now writes a **unified findings report** at the evidence
   root: `findings.json` (schema `vestigium/findings/1`) and a self-contained,
   offline `findings.html`. Both platforms feed one shared report UI

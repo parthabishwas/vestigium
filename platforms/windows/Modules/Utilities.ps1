@@ -1465,6 +1465,65 @@ function Copy-DFIREsentutlVss {
     return $true
 }
 
+function Copy-DFIRRawCopy {
+<#
+.SYNOPSIS
+    Extracts a locked NTFS metadata file ($MFT, $LogFile, $UsnJrnl:$J) with the
+    optional RawCopy64.exe helper.
+.DESCRIPTION
+    RawCopy64.exe (jschicht/RawCopy) reads NTFS metadata by parsing the volume
+    directly, so it does not need a Volume Shadow Copy and is not blocked by the
+    by-name open that NTFS refuses. It is the most reliable acquisition method
+    where esentutl /vss cannot initialise the VSS subsystem. Absent tool -> the
+    caller falls back to esentutl and the raw snapshot handle.
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][hashtable]$Context,
+        [Parameter(Mandatory=$true)][string]$FileNamePath,   # e.g. C:\$MFT
+        [Parameter(Mandatory=$true)][string]$Destination
+    )
+
+    $rawcopy = ''
+    if ($Context.ContainsKey('ToolsPath') -and $Context.ToolsPath) { $rawcopy = Join-Path $Context.ToolsPath 'RawCopy64.exe' }
+    if (-not $rawcopy -or -not (Test-Path -LiteralPath $rawcopy -PathType Leaf)) { return $false }
+
+    $outDir = Split-Path -Parent $Destination
+    $outName = Split-Path -Leaf $Destination
+    if ($outDir -and -not (Test-Path -LiteralPath $outDir)) {
+        try { New-Item -ItemType Directory -Path $outDir -Force -ErrorAction Stop | Out-Null } catch { return $false }
+    }
+    if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue }
+
+    $log = $Destination + '.rawcopy.log'
+    $global:LASTEXITCODE = 0
+    try {
+        $out = & $rawcopy ('/FileNamePath:' + $FileNamePath) ('/OutputPath:' + $outDir) ('/OutputName:' + $outName) 2>&1
+        $out | Out-File -FilePath $log -Encoding UTF8 -Width 4096
+        Add-DFIRCollectedFile -Context $Context -Path $log
+    }
+    catch {
+        Write-DFIRLog -Context $Context -Level WARN -Message ("RawCopy threw for {0}: {1}" -f $FileNamePath, $_.Exception.Message)
+        return $false
+    }
+
+    $size = 0
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        try { $size = (New-Object System.IO.FileInfo($Destination)).Length } catch { $size = 0 }
+    }
+    if ($size -le 0) {
+        Write-DFIRLog -Context $Context -Level WARN -Message ("RawCopy produced no data for {0}; see {1}" -f $FileNamePath, $log)
+        return $false
+    }
+
+    Write-DFIRLog -Context $Context -Message ("RawCopy: {0} -> {1} ({2} bytes)" -f $FileNamePath, $outName, $size)
+    Add-DFIRCollectedFile -Context $Context -Path $Destination
+    Add-DFIRProvenance -Context $Context -Source $FileNamePath -Destination $Destination -Snapshot $null -CopyMethod 'RawBackup'
+    return $true
+}
+
 function Export-DFIRBinaryStrings {
 <#
 .SYNOPSIS

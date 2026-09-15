@@ -165,6 +165,11 @@ Automation and docs:
 - `Amcache.hve` (execution evidence: program path, SHA-1, first-seen time) is
   a locked live hive, so it is now acquired from the shadow copy into
   `17_Execution\Amcache\` instead of a doomed live copy.
+- `$MFT` / `$LogFile` / `$UsnJrnl` are now acquired with the optional
+  `RawCopy64.exe` (staged by setup) as the primary method - it parses NTFS
+  directly and needs no VSS, unlike `esentutl /vss` which fails to initialise
+  the VSS subsystem on some hosts. esentutl and the raw snapshot handle remain
+  fallbacks; the live `fsutil` USN read is always taken.
 - `-ScanDrives D:,E:` extends the YARA scan and NTFS-metadata acquisition
   ($MFT, $LogFile, USN journal via `esentutl /vss`) to non-system volumes,
   written to `21_FileSystem\<letter>\`.

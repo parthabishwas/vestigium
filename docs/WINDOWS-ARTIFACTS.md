@@ -15,8 +15,8 @@ collection: the locked NTFS metadata and the locked registry hives.
 
 | Artifact | How | Output | Offline parse |
 |---|---|---|---|
-| `$MFT`, `$LogFile` | Volume Shadow Copy, backup-semantics raw read | `21_FileSystem/MFT`, `LogFile` | MFTECmd |
-| USN journal (`$UsnJrnl:$J`) | allocated-range copy of the sparse ADS, plus an independent `fsutil usn readjournal` | `21_FileSystem/UsnJrnl_J` or `UsnJrnl_readjournal.csv` | MFTECmd / fsutil |
+| `$MFT`, `$LogFile` | RawCopy64 (raw NTFS parse), else esentutl /vss, else snapshot handle | `21_FileSystem/MFT`, `LogFile` | MFTECmd |
+| USN journal (`$UsnJrnl:$J`) | RawCopy64 / esentutl if available, plus an independent `fsutil usn readjournal` | `21_FileSystem/UsnJrnl_J` or `UsnJrnl_readjournal.csv` | MFTECmd / fsutil |
 | `NTUSER.DAT`, `UsrClass.dat` (+ `.LOG1/.LOG2`) | copied from the shadow copy (no `reg load`) | `05_Registry/Hives_VSS/<user>/` | Registry Explorer / RECmd -> ShellBags, UserAssist, RecentDocs |
 | `SAM`, `SECURITY`, `SYSTEM`, `SOFTWARE` (+ logs) | copied from the shadow copy | `05_Registry/Hives_VSS/_MACHINE/` | secretsdump.py / samdump2 -> local hashes, LSA secrets, cached domain creds |
 | Host firewall profiles + rules | `netsh advfirewall` | `08_Network/FirewallProfiles.txt`, `FirewallRules.txt` | disabled profile flagged as a finding |

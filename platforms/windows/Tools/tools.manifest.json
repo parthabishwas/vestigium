@@ -37,6 +37,14 @@
       "url": "https://live.sysinternals.com/Autorunsc64.exe",
       "sha256": "",
       "note": "Microsoft Sysinternals. Redistribution is prohibited by its EULA, so it is fetched from Microsoft here and never committed. live.sysinternals.com always serves the current build; a pinned sha256 needs updating when Microsoft ships a new one."
+    },
+    {
+      "name": "RawCopy64.exe",
+      "purpose": "Raw NTFS extraction of $MFT / $LogFile / $UsnJrnl (no VSS needed)",
+      "type": "exe",
+      "url": "https://raw.githubusercontent.com/jschicht/RawCopy/master/RawCopy64.exe",
+      "sha256": "",
+      "note": "jschicht/RawCopy. Reads NTFS metadata by parsing the volume directly; used by the Forensics step when esentutl /vss cannot acquire the metadata files. To freeze, pin sha256."
     }
   ]
 }

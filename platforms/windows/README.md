@@ -69,7 +69,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\platforms\windows\Tools\Update-Ya
 
 ## Helper binaries
 
-`yara64.exe`, `yarac64.exe`, `winpmem_mini_x64*.exe` and `Autorunsc64.exe` are not shipped in
+`yara64.exe`, `yarac64.exe`, `winpmem_mini_x64*.exe`, `Autorunsc64.exe` and `RawCopy64.exe` are not shipped in
 Git (Sysinternals forbids redistribution). `setup` downloads them from their
 official vendors into `Tools\`. By default `Tools\tools.manifest.json` tracks
 each tool's **latest GitHub release** (Sysinternals uses its always-current

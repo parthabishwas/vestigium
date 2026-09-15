@@ -257,15 +257,19 @@ function Invoke-DFIRVssAcquire {
     $logOut = Join-Path $dest 'LogFile'
     $usnOut = Join-Path $dest 'UsnJrnl_J'
 
-    # --- Phase 1: NTFS metadata via esentutl.exe /y /vss. esentutl creates and
-    #     releases its OWN shadow copy per file, so it MUST run before we create
-    #     our own shadow below - two overlapping VSS operations fail with
-    #     JET_errOSSnapshotNotAllowed ("backup or recovery in progress"). NTFS
-    #     also refuses to open these metadata files by name on a snapshot, so a
-    #     raw backup-semantics handle is only a weak fallback (Phase 2). ---
-    $mftOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$MFT')     -Destination $mftOut
-    $logOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$LogFile') -Destination $logOut
-    $usnOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$Extend\$UsnJrnl:$J') -Destination $usnOut
+    # --- Phase 1: NTFS metadata. Preferred method is RawCopy64.exe (parses NTFS
+    #     directly, no VSS, not blocked by the by-name open NTFS refuses). Next
+    #     is esentutl /y /vss, which makes its OWN shadow so it must run before we
+    #     create ours - overlapping VSS operations fail JET_errOSSnapshotNotAllowed
+    #     - though on some hosts esentutl cannot initialise VSS at all (0x80070005).
+    #     A raw backup-semantics handle on our snapshot is the last, weak fallback
+    #     (Phase 2). ---
+    $mftOk = Copy-DFIRRawCopy -Context $Context -FileNamePath ($liveDrive + '\$MFT') -Destination $mftOut
+    if (-not $mftOk) { $mftOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$MFT') -Destination $mftOut }
+    $logOk = Copy-DFIRRawCopy -Context $Context -FileNamePath ($liveDrive + '\$LogFile') -Destination $logOut
+    if (-not $logOk) { $logOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$LogFile') -Destination $logOut }
+    $usnOk = Copy-DFIRRawCopy -Context $Context -FileNamePath ($liveDrive + '\$Extend\$UsnJrnl:$J') -Destination $usnOut
+    if (-not $usnOk) { $usnOk = Copy-DFIREsentutlVss -Context $Context -Source ($liveDrive + '\$Extend\$UsnJrnl:$J') -Destination $usnOut }
     # Always also take an independent live fsutil USN read.
     [void](Export-DFIRRawUsnFallback -Context $Context -Lines $lines)
 

@@ -181,6 +181,24 @@ function Invoke-DFIRVssAcquire {
             }
         }
         [void]$lines.Add(('OK    registry hives from snapshot: {0} primary hive(s) -> {1}' -f $hiveCount, '05_Registry\Hives_VSS'))
+
+        # Machine hives from the snapshot: SAM, SECURITY, SYSTEM, SOFTWARE (with
+        # transaction logs). These enable offline local hash extraction, LSA
+        # secrets, cached domain credentials and full SOFTWARE-hive persistence
+        # parsing - none of which the live reg-export subtrees can provide.
+        $machineDest = Join-Path $hiveRoot '_MACHINE'
+        $configBase = $device + '\Windows\System32\config\'
+        $machineCount = 0
+        foreach ($hive in @('SAM', 'SECURITY', 'SYSTEM', 'SOFTWARE')) {
+            foreach ($suffix in @('', '.LOG1', '.LOG2')) {
+                $src = $configBase + $hive + $suffix
+                $out = Join-Path $machineDest ($hive + $suffix)
+                if (Copy-DFIRLockedFile -Context $Context -Source $src -Destination $out) {
+                    if ($suffix -eq '') { $machineCount++ }
+                }
+            }
+        }
+        [void]$lines.Add(('OK    machine hives from snapshot: {0}/4 (SAM,SECURITY,SYSTEM,SOFTWARE) -> {1}' -f $machineCount, '05_Registry\Hives_VSS\_MACHINE'))
         $Context['NtfsAcquired'] = $true
     }
     catch {
@@ -194,6 +212,7 @@ function Invoke-DFIRVssAcquire {
     [void]$lines.Add('')
     [void]$lines.Add('Parse offline, for example: MFTECmd.exe -f MFT --csv out; MFTECmd.exe -f UsnJrnl_J --csv out;')
     [void]$lines.Add('and load the hives with Registry Explorer / RECmd (ShellBags, UserAssist, RecentDocs).')
+    [void]$lines.Add('Machine hives (SAM+SYSTEM, SECURITY+SYSTEM) parse offline with secretsdump.py / impacket or samdump2 for local hashes, cached domain creds and LSA secrets.')
     Write-DFIRAcquisitionNote -Context $Context -Dest $dest -Lines $lines
     return $true
 }

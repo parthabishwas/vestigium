@@ -88,6 +88,8 @@ The `Forensics` step acquires artifacts a live collection otherwise cannot:
 - **$Recycle.Bin** `$I` metadata -> `21_FileSystem\RecycleBin\`.
 - **Defender MPLog** -> `12_Defender\MPLog\`.
 - **Clock offset** (`w32tm`) -> `01_System\ClockOffset.txt`.
+- **Machine hives** `SAM` / `SECURITY` / `SYSTEM` / `SOFTWARE` -> `05_Registry\Hives_VSS\_MACHINE\`
+  (offline local hashes, LSA secrets, cached domain creds).
 
 The shadow copy Vestigium creates is deleted afterwards.
 

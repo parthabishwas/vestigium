@@ -164,7 +164,15 @@ Automation and docs:
   succeeded.
 - `-ScanDrives D:,E:` extends the YARA scan and NTFS-metadata acquisition
   ($MFT, $LogFile, USN journal via `esentutl /vss`) to non-system volumes,
-  written to `21_FileSystem\<letter>\`. **This module is unvalidated on real Windows** (no Windows CI) -
+  written to `21_FileSystem\<letter>\`.
+- Machine registry hives (`SAM`, `SECURITY`, `SYSTEM`, `SOFTWARE`, with logs)
+  are now copied from the shadow copy into `05_Registry\Hives_VSS\_MACHINE\`,
+  enabling offline local-hash, LSA-secret and cached-credential extraction.
+- Host firewall profiles and rules (`netsh advfirewall`) and BITS transfer
+  jobs (`Get-BitsTransfer -AllUsers`) are collected under `08_Network\`. A
+  disabled firewall profile is flagged (`windows.defense.firewall_disabled`),
+  and BITS jobs fetching from a raw-IP URL or writing to a user-writable path
+  are flagged (`windows.execution.bits_jobs`). **This module is unvalidated on real Windows** (no Windows CI) -
   the doc carries a validation checklist.
 
 **Linux:**

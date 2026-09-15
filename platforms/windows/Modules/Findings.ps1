@@ -391,6 +391,73 @@ function Get-DFIRFindingRemoteAccess {
         -Note 'Legitimate use is common; confirm the tool is expected on this host.'
 }
 
+function Get-DFIRFindingFirewallDisabled {
+<#
+.SYNOPSIS
+    windows.defense.firewall_disabled (high) from FirewallProfiles.txt.
+.OUTPUTS
+    System.Collections.Specialized.OrderedDictionary or $null
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $path = Join-Path $Context.Paths.Network 'FirewallProfiles.txt'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+
+    $profileName = ''
+    $items = New-Object System.Collections.ArrayList
+    foreach ($line in (Get-DFIRFindingFileLines -Path $path)) {
+        if ($null -eq $line) { continue }
+        if ($line -match '^\s*([A-Za-z]+)\s+Profile\s+Settings:') { $profileName = $matches[1]; continue }
+        if ($line -match '^\s*State\s+OFF\b') {
+            [void]$items.Add(('{0} profile: firewall State OFF' -f ($(if ($profileName) { $profileName } else { 'Unknown' }))))
+        }
+    }
+
+    if ($items.Count -eq 0) { return $null }
+
+    return New-DFIRFinding -Id 'windows.defense.firewall_disabled' -Title 'Windows Firewall is disabled for one or more profiles' `
+        -Severity 'high' -Category 'integrity' -Count $items.Count `
+        -Summary 'A firewall profile reports State OFF, a common defence-evasion step.' `
+        -Evidence @('08_Network/FirewallProfiles.txt') -Items @($items) `
+        -Note 'Confirm whether the profile is disabled by policy; review FirewallRules.txt for malware-added inbound Allow rules.'
+}
+
+function Get-DFIRFindingBitsJobs {
+<#
+.SYNOPSIS
+    windows.execution.bits_jobs (medium) from BitsTransfers.csv.
+.OUTPUTS
+    System.Collections.Specialized.OrderedDictionary or $null
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $path = Join-Path $Context.Paths.Network 'BitsTransfers.csv'
+    $rows = Get-DFIRFindingCsvRows -Path $path
+    if ($rows.Count -eq 0) { return $null }
+
+    $items = New-Object System.Collections.ArrayList
+    foreach ($r in $rows) {
+        $remote = [string](Get-DFIRObjectProperty -InputObject $r -Name 'RemoteName')
+        $local  = [string](Get-DFIRObjectProperty -InputObject $r -Name 'LocalName')
+        $state  = [string](Get-DFIRObjectProperty -InputObject $r -Name 'State')
+        $suspicious = $false
+        if ($remote -match '(?i)^https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}') { $suspicious = $true }
+        if ($local -match '(?i)\\(Temp|AppData|Users\\Public)\\') { $suspicious = $true }
+        if (-not $suspicious) { continue }
+        [void]$items.Add(('{0}  {1} -> {2}' -f $state, $remote, $local))
+    }
+
+    if ($items.Count -eq 0) { return $null }
+
+    return New-DFIRFinding -Id 'windows.execution.bits_jobs' -Title 'Suspicious BITS transfer jobs' `
+        -Severity 'medium' -Category 'execution' -Count $items.Count `
+        -Summary 'BITS jobs fetch from a raw-IP URL or write into a user-writable path, a common download / persistence channel.' `
+        -Evidence @('08_Network/BitsTransfers.csv') -Items @($items) `
+        -Note 'BITS jobs survive reboots and run as a service; confirm the remote host and the local payload.'
+}
+
 function Get-DFIRFindingCollectionSteps {
 <#
 .SYNOPSIS
@@ -528,6 +595,8 @@ function Get-DFIRFindingsDocument {
         (Get-DFIRFindingSystemTasks -Context $Context),
         (Get-DFIRFindingListeners -Context $Context),
         (Get-DFIRFindingRemoteAccess -Context $Context),
+        (Get-DFIRFindingFirewallDisabled -Context $Context),
+        (Get-DFIRFindingBitsJobs -Context $Context),
         (Get-DFIRFindingCollectionSteps -Context $Context),
         (Get-DFIRFindingCollectionSummary -Context $Context)
     )

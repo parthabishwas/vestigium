@@ -18,6 +18,9 @@ collection: the locked NTFS metadata and the locked registry hives.
 | `$MFT`, `$LogFile` | Volume Shadow Copy, backup-semantics raw read | `21_FileSystem/MFT`, `LogFile` | MFTECmd |
 | USN journal (`$UsnJrnl:$J`) | allocated-range copy of the sparse ADS, plus an independent `fsutil usn readjournal` | `21_FileSystem/UsnJrnl_J` or `UsnJrnl_readjournal.csv` | MFTECmd / fsutil |
 | `NTUSER.DAT`, `UsrClass.dat` (+ `.LOG1/.LOG2`) | copied from the shadow copy (no `reg load`) | `05_Registry/Hives_VSS/<user>/` | Registry Explorer / RECmd -> ShellBags, UserAssist, RecentDocs |
+| `SAM`, `SECURITY`, `SYSTEM`, `SOFTWARE` (+ logs) | copied from the shadow copy | `05_Registry/Hives_VSS/_MACHINE/` | secretsdump.py / samdump2 -> local hashes, LSA secrets, cached domain creds |
+| Host firewall profiles + rules | `netsh advfirewall` | `08_Network/FirewallProfiles.txt`, `FirewallRules.txt` | disabled profile flagged as a finding |
+| BITS transfer jobs | `Get-BitsTransfer -AllUsers` | `08_Network/BitsTransfers.csv` | raw-IP or user-writable-path jobs flagged as a finding |
 | LNK shortcuts, Jump Lists | per-profile `Recent`, `AutomaticDestinations`, `CustomDestinations` | `17_Execution/UserArtifacts/<user>/` + `index.csv` | LECmd / JLECmd |
 | `$Recycle.Bin` | `$I` index files + `$I`/`$R` listing (no `$R` blobs) | `21_FileSystem/RecycleBin/<SID>/` + `index.csv` | RBCmd |
 | Defender MPLog | most recent `MPLog-*` / `MPDetection-*` | `12_Defender/MPLog/` | text |

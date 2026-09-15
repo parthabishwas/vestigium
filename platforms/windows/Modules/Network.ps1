@@ -23,6 +23,29 @@ function Invoke-DFIRNetworkCollection {
     $success = (Save-DFIRText -Context $Context -Name 'Get-NetAdapter' -Path (Join-Path $Context.Paths.Network 'Get-NetAdapter.txt') -ScriptBlock { Get-NetAdapter -ErrorAction SilentlyContinue | Format-Table -AutoSize }) -and $success
     $success = (Save-DFIRText -Context $Context -Name 'Get-NetRoute' -Path (Join-Path $Context.Paths.Network 'Get-NetRoute.txt') -ScriptBlock { Get-NetRoute -ErrorAction SilentlyContinue | Format-Table -AutoSize }) -and $success
 
+    # Host firewall: per-profile state (a disabled profile is a defence-evasion
+    # signal) and the full rule set (malware-added inbound Allow rules).
+    $success = (Invoke-DFIRSafeCommand -Context $Context -Name 'firewall profiles' -FilePath 'netsh.exe' -Arguments @('advfirewall','show','allprofiles') -OutputPath (Join-Path $Context.Paths.Network 'FirewallProfiles.txt')) -and $success
+    $success = (Invoke-DFIRSafeCommand -Context $Context -Name 'firewall rules' -FilePath 'netsh.exe' -Arguments @('advfirewall','firewall','show','rule','name=all') -OutputPath (Join-Path $Context.Paths.Network 'FirewallRules.txt')) -and $success
+
+    # BITS transfer jobs (a common download / persistence / exfil channel). One
+    # row per file so remote URLs and local destinations are both visible.
+    $success = (Export-DFIRCsv -Context $Context -Name 'BITS transfers' -Path (Join-Path $Context.Paths.Network 'BitsTransfers.csv') -ScriptBlock {
+        try { $jobs = @(Get-BitsTransfer -AllUsers -ErrorAction Stop) } catch { $jobs = @() }
+        foreach ($j in $jobs) {
+            $files = @()
+            try { $files = @($j.FileList) } catch { $files = @() }
+            if ($files.Count -eq 0) {
+                [pscustomobject]@{ JobId = $j.JobId; DisplayName = $j.DisplayName; Owner = $j.OwnerAccount; State = $j.JobState; Type = $j.TransferType; Created = $j.CreationTime; RemoteName = ''; LocalName = '' }
+            }
+            else {
+                foreach ($f in $files) {
+                    [pscustomobject]@{ JobId = $j.JobId; DisplayName = $j.DisplayName; Owner = $j.OwnerAccount; State = $j.JobState; Type = $j.TransferType; Created = $j.CreationTime; RemoteName = $f.RemoteName; LocalName = $f.LocalName }
+                }
+            }
+        }
+    }) -and $success
+
     $hostsSource = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
     $hostsDest = Join-Path $Context.Paths.Hosts 'hosts'
     $success = (Copy-DFIRFile -Context $Context -Source $hostsSource -Destination $hostsDest) -and $success

@@ -23,6 +23,10 @@ collection: the locked NTFS metadata and the locked registry hives.
 | Defender MPLog | most recent `MPLog-*` / `MPDetection-*` | `12_Defender/MPLog/` | text |
 | Clock offset | `w32tm /query /status` + `/configuration` + local/UTC | `01_System/ClockOffset.txt` | text |
 
+Non-system volumes are only inventoried and shallow-listed by default. Pass
+`-ScanDrives D:,E:` to also YARA-scan them and acquire their `$MFT`, `$LogFile`
+and USN journal (via `esentutl /vss`) into `21_FileSystem/<letter>/`.
+
 The shadow copy Vestigium creates is deleted at the end of the step (in a
 `finally`). Pre-existing shadow copies are never touched. `21_FileSystem/_ACQUISITION.txt`
 records what was obtained, what fell back and what failed. When VSS is

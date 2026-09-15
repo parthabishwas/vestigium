@@ -152,7 +152,10 @@ Automation and docs:
   `$I` metadata (`21_FileSystem/RecycleBin/`), Defender MPLog
   (`12_Defender/MPLog/`) and the w32tm clock offset (`01_System/ClockOffset.txt`).
 - The 'no MFT/USN' triage gap now reflects whether acquisition actually
-  succeeded. **This module is unvalidated on real Windows** (no Windows CI) -
+  succeeded.
+- `-ScanDrives D:,E:` extends the YARA scan and NTFS-metadata acquisition
+  ($MFT, $LogFile, USN journal via `esentutl /vss`) to non-system volumes,
+  written to `21_FileSystem\<letter>\`. **This module is unvalidated on real Windows** (no Windows CI) -
   the doc carries a validation checklist.
 
 **Linux:**

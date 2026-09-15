@@ -955,6 +955,73 @@ function Copy-DFIRFile {
     }
 }
 
+function Resolve-DFIRScanDrives {
+<#
+.SYNOPSIS
+    Normalises and validates the -ScanDrives list into "X:" drive identifiers.
+.DESCRIPTION
+    Accepts entries such as D, d:, "E:\" and returns a de-duplicated list of
+    validated, local fixed or removable volumes (e.g. @('D:','E:')). The system
+    drive is dropped (already covered by the default collection), and anything
+    that is not an accessible local volume is warned about and skipped.
+.OUTPUTS
+    System.String[]
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][hashtable]$Context,
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][string[]]$Requested
+    )
+
+    $result = New-Object System.Collections.ArrayList
+    if (-not $Requested -or $Requested.Count -eq 0) { return @() }
+
+    $sysDrive = ($env:SystemDrive).TrimEnd('\').ToUpper()   # e.g. C:
+    $known = @{}
+    try {
+        Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=2 OR DriveType=3' -ErrorAction Stop |
+            ForEach-Object { $known[$_.DeviceID.ToUpper()] = [int]$_.DriveType }
+    }
+    catch { }
+
+    # Expand any comma/semicolon/space-separated entries. A native call binds
+    # `-ScanDrives D:,E:` to two elements, but the launcher forwards it as the
+    # single string "D:,E:"; both must yield @('D:','E:').
+    $tokens = New-Object System.Collections.ArrayList
+    foreach ($entry in $Requested) {
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        foreach ($part in ($entry -split '[,;\s]+')) {
+            if (-not [string]::IsNullOrWhiteSpace($part)) { [void]$tokens.Add($part) }
+        }
+    }
+
+    foreach ($raw in $tokens) {
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        $letter = ($raw.Trim().TrimEnd('\').TrimEnd(':')).ToUpper()
+        if ($letter.Length -ne 1 -or ($letter -notmatch '^[A-Z]$')) {
+            Write-DFIRLog -Context $Context -Level WARN -Message ("Ignoring invalid -ScanDrives entry '{0}' (use a drive letter such as D or D:)" -f $raw)
+            continue
+        }
+        $id = $letter + ':'
+        if ($id -eq $sysDrive) {
+            Write-DFIRLog -Context $Context -Message ("-ScanDrives {0} is the system drive; already covered by the default collection - skipping" -f $id)
+            continue
+        }
+        if ($known.Count -gt 0 -and -not $known.ContainsKey($id)) {
+            Write-DFIRLog -Context $Context -Level WARN -Message ("-ScanDrives {0} is not a local fixed or removable volume on this host - skipping" -f $id)
+            continue
+        }
+        if (-not (Test-Path -LiteralPath ($id + '\'))) {
+            Write-DFIRLog -Context $Context -Level WARN -Message ("-ScanDrives {0} is not accessible - skipping" -f $id)
+            continue
+        }
+        $already = $false
+        foreach ($e in $result) { if ($e -eq $id) { $already = $true; break } }
+        if (-not $already) { [void]$result.Add($id) }
+    }
+    return @($result)
+}
+
 function Copy-DFIRLockedFile {
 <#
 .SYNOPSIS

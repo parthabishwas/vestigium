@@ -117,6 +117,11 @@ function Invoke-DFIRYaraCollection {
         $env:ProgramData
     )
     $targets = if ($quick) { $quickTargets } else { $fullTargets }
+    # -ScanDrives adds the root of each requested non-system volume, in quick and
+    # full mode alike (the operator opted in explicitly). Whole-drive scans can
+    # be slow; the per-target YARA timeout still applies.
+    $scanDrives = if ($Context.ContainsKey('ScanDrives')) { @($Context['ScanDrives']) } else { @() }
+    foreach ($d in $scanDrives) { $targets = @($targets) + ($d + '\') }
     $targets = @($targets | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
 
     # The toolkit ships a YARA rule corpus that embeds malware strings and test

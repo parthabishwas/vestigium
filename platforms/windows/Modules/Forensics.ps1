@@ -29,6 +29,7 @@ function Invoke-DFIRForensicsCollection {
     $success = $true
 
     $success = (Invoke-DFIRVssAcquire -Context $Context) -and $success
+    $success = (Invoke-DFIRScanDriveAcquire -Context $Context) -and $success
     $success = (Copy-DFIRUserShellArtifacts -Context $Context) -and $success
     $success = (Export-DFIRRecycleBin -Context $Context) -and $success
     $success = (Copy-DFIRDefenderMpLog -Context $Context) -and $success
@@ -222,15 +223,77 @@ function Export-DFIRRawUsnFallback {
 #>
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][hashtable]$Context,
-          [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.ArrayList]$Lines)
+          [Parameter(Mandatory=$true)][AllowEmptyCollection()][System.Collections.ArrayList]$Lines,
+          [string]$Drive = '',
+          [string]$DestDir = '')
     $ok = $true
-    $drive = $env:SystemDrive
-    $query = Join-Path $Context.Paths.FileSystem 'UsnJrnl_query.txt'
-    $ok = (Invoke-DFIRSafeCommand -Context $Context -Name 'fsutil usn queryjournal' -OutputPath $query -FilePath 'fsutil.exe' -Arguments @('usn','queryjournal',$drive)) -and $ok
-    $read = Join-Path $Context.Paths.FileSystem 'UsnJrnl_readjournal.csv'
-    $ok = (Invoke-DFIRSafeCommand -Context $Context -Name 'fsutil usn readjournal' -OutputPath $read -FilePath 'fsutil.exe' -Arguments @('usn','readjournal',$drive,'csv')) -and $ok
+    $drive = if ([string]::IsNullOrWhiteSpace($Drive)) { $env:SystemDrive } else { $Drive.TrimEnd('\') }
+    $dir = if ([string]::IsNullOrWhiteSpace($DestDir)) { $Context.Paths.FileSystem } else { $DestDir }
+    $query = Join-Path $dir 'UsnJrnl_query.txt'
+    $ok = (Invoke-DFIRSafeCommand -Context $Context -Name ('fsutil usn queryjournal {0}' -f $drive) -OutputPath $query -FilePath 'fsutil.exe' -Arguments @('usn','queryjournal',$drive)) -and $ok
+    $read = Join-Path $dir 'UsnJrnl_readjournal.csv'
+    $ok = (Invoke-DFIRSafeCommand -Context $Context -Name ('fsutil usn readjournal {0}' -f $drive) -OutputPath $read -FilePath 'fsutil.exe' -Arguments @('usn','readjournal',$drive,'csv')) -and $ok
     [void]$Lines.Add('      (live fsutil usn queryjournal + readjournal written to UsnJrnl_query.txt / UsnJrnl_readjournal.csv)')
     return $ok
+}
+
+function Invoke-DFIRScanDriveAcquire {
+<#
+.SYNOPSIS
+    Acquires NTFS metadata ($MFT, $LogFile, USN journal) from each -ScanDrives
+    volume into 21_FileSystem\<letter>\.
+.DESCRIPTION
+    esentutl.exe /y /vss creates and releases its own shadow copy per source, so
+    each requested volume is handled without managing a shadow here. A live
+    fsutil USN read is always taken as an independent copy. Registry hives are
+    not pulled from these drives (user profiles live on the system drive); the
+    Recycle Bin of every fixed drive is already covered by Export-DFIRRecycleBin.
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $drives = if ($Context.ContainsKey('ScanDrives')) { @($Context['ScanDrives']) } else { @() }
+    if (-not $drives -or $drives.Count -eq 0) { return $true }
+
+    foreach ($id in $drives) {
+        $letter = $id.TrimEnd(':')
+        $dest = Join-Path $Context.Paths.FileSystem $letter
+        New-Item -ItemType Directory -Path $dest -Force -ErrorAction SilentlyContinue | Out-Null
+        $lines = New-Object System.Collections.ArrayList
+        [void]$lines.Add(('NTFS metadata acquisition for volume {0} (-ScanDrives)' -f $id))
+        [void]$lines.Add('======================================================')
+        [void]$lines.Add(('Generated: {0:o}' -f (Get-Date))); [void]$lines.Add('')
+
+        $metas = @(
+            @{ Name = '$MFT';     Live = ($id + '\$MFT');     Out = (Join-Path $dest 'MFT') },
+            @{ Name = '$LogFile'; Live = ($id + '\$LogFile'); Out = (Join-Path $dest 'LogFile') }
+        )
+        foreach ($m in $metas) {
+            if (Copy-DFIREsentutlVss -Context $Context -Source $m.Live -Destination $m.Out) {
+                [void]$lines.Add(('OK    {0} -> {1}\{2} (esentutl /vss)' -f $m.Name, $letter, (Split-Path -Leaf $m.Out)))
+            }
+            else {
+                [void]$lines.Add(('FAIL  {0} (esentutl /vss copy failed)' -f $m.Name))
+            }
+        }
+
+        $usnLive = $id + '\$Extend\$UsnJrnl:$J'
+        $usnOut = Join-Path $dest 'UsnJrnl_J'
+        if (Copy-DFIREsentutlVss -Context $Context -Source $usnLive -Destination $usnOut) {
+            [void]$lines.Add(('OK    $UsnJrnl:$J -> {0}\UsnJrnl_J (esentutl /vss)' -f $letter))
+        }
+        else {
+            [void]$lines.Add('FAIL  $UsnJrnl:$J raw copy unavailable; using fsutil read only')
+        }
+        [void](Export-DFIRRawUsnFallback -Context $Context -Lines $lines -Drive $id -DestDir $dest)
+
+        [void]$lines.Add('')
+        [void]$lines.Add('Parse offline, for example: MFTECmd.exe -f MFT --csv out; MFTECmd.exe -f UsnJrnl_J --csv out;')
+        Write-DFIRAcquisitionNote -Context $Context -Dest $dest -Lines $lines
+    }
+    return $true
 }
 
 function Write-DFIRAcquisitionNote {

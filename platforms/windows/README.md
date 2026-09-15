@@ -89,7 +89,13 @@ The `Forensics` step acquires artifacts a live collection otherwise cannot:
 - **Defender MPLog** -> `12_Defender\MPLog\`.
 - **Clock offset** (`w32tm`) -> `01_System\ClockOffset.txt`.
 
-The shadow copy Vestigium creates is deleted afterwards. Requires an elevated
+The shadow copy Vestigium creates is deleted afterwards.
+
+**Other drives.** By default only the system drive is deep-collected. Pass
+`-ScanDrives D:,E:` to also YARA-scan those volumes and acquire their NTFS
+metadata (`$MFT`, `$LogFile`, USN journal) into `21_FileSystem\<letter>\`.
+Accepts `D:`, `D`, or a list; the system drive and non-local volumes are
+ignored. Whole-drive YARA scans can be slow. Requires an elevated
 session; when VSS is unavailable the step degrades and logs the gap. This
 module is **not yet validated on real Windows** - see
 [../../docs/WINDOWS-ARTIFACTS.md](../../docs/WINDOWS-ARTIFACTS.md) for the

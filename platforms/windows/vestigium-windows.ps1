@@ -39,10 +39,17 @@
 .PARAMETER BrowserCredentialStores
     Copy (default, v1.1 behaviour) or MetadataOnly (record size, timestamps and
     SHA256 of password/cookie/token stores instead of copying them).
+.PARAMETER ScanDrives
+    Additional non-system volumes to also YARA-scan and acquire NTFS metadata
+    from ($MFT, $LogFile, USN journal into 21_FileSystem\<letter>\). Accepts drive
+    letters such as "D:" or "D","E". The system drive and non-local volumes are
+    ignored. Whole-drive YARA scans can be slow.
 .PARAMETER Version
     Print the kit version and exit 0.
 .EXAMPLE
     .\vestigium.cmd -CaseId IR-2026-014 -TargetUser alice
+.EXAMPLE
+    .\vestigium.ps1 -CaseId IR-2026-014 -ScanDrives D:,E:
 .EXAMPLE
     powershell.exe -ExecutionPolicy Bypass -File .\platforms\windows\vestigium-windows.ps1 -CaseId IR-2026-014 -TargetUser "alice,CORP\bob" -BrowserCredentialStores MetadataOnly
 .EXAMPLE
@@ -67,7 +74,8 @@ param(
     [switch]$NoArchive,
     [switch]$Version,
     [switch]$CaptureMemory,
-    [string]$BrowserCredentialStores = 'Copy'
+    [string]$BrowserCredentialStores = 'Copy',
+    [string[]]$ScanDrives = @()
 )
 
 $script:VestigiumScriptRoot = $PSScriptRoot
@@ -312,6 +320,7 @@ function Start-DFIRCollector {
         $context['YaraTimeoutSeconds'] = $YaraTimeoutSeconds
         $context['CaptureMemory'] = $MemoryRequested
         $context['BrowserCredentialStores'] = $CredentialPolicy
+        $context['ScanDrives'] = @(Resolve-DFIRScanDrives -Context $context -Requested @($ScanDrives))
         $transcriptPath = Join-Path $context.Paths.Logs 'Transcript.txt'
         try {
             Start-Transcript -Path $transcriptPath -Append -ErrorAction Stop | Out-Null
@@ -326,6 +335,10 @@ function Start-DFIRCollector {
         Write-DFIRLog -Context $context -Message ("Case: {0} [{1}] Operator={2} KitRoot={3}" -f $context.CaseId, $context.CaseIdSource, $context.Operator, $KitRoot)
         Write-DFIRLog -Context $context -Message ("Invocation: {0}" -f (($context['Invocation'] | ConvertTo-Json -Compress -Depth 3)))
         Write-DFIRLog -Context $context -Message ("Steps: {0}; BrowserCredentialStores={1}" -f ($SelectedSteps -join ','), $CredentialPolicy)
+        $scanDrivesResolved = @($context['ScanDrives'])
+        if ($scanDrivesResolved.Count -gt 0) {
+            Write-DFIRLog -Context $context -Message ("ScanDrives: also scanning and acquiring NTFS metadata from {0}" -f ($scanDrivesResolved -join ', '))
+        }
         foreach ($profile in $context['TargetProfiles']) {
             Write-DFIRLog -Context $context -Message ("Target profile: UserName={0} SID={1} ProfilePath={2}" -f $profile.UserName, $profile.SID, $profile.ProfilePath)
         }

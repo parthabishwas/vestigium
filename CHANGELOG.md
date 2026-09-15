@@ -172,7 +172,14 @@ Automation and docs:
   jobs (`Get-BitsTransfer -AllUsers`) are collected under `08_Network\`. A
   disabled firewall profile is flagged (`windows.defense.firewall_disabled`),
   and BITS jobs fetching from a raw-IP URL or writing to a user-writable path
-  are flagged (`windows.execution.bits_jobs`). **This module is unvalidated on real Windows** (no Windows CI) -
+  are flagged (`windows.execution.bits_jobs`).
+- Additional collection: NTFS alternate data streams incl. Zone.Identifier
+  download marks (`21_FileSystem\AlternateDataStreams.csv`), archive files in
+  user-writable staging paths (`StagingArchives.csv`), Windows Error Reporting
+  metadata (`21_FileSystem\WER\`), certificate stores incl. root CAs
+  (`01_System\CertificateStores.csv`), named pipes (`02_Processes\NamedPipes.txt`),
+  WinRM state (`08_Network\WinRM.txt`), and Office macro trust records / VBA
+  settings (per-user Office hive subtree in `05_Registry\`). **This module is unvalidated on real Windows** (no Windows CI) -
   the doc carries a validation checklist.
 
 **Linux:**
@@ -187,6 +194,9 @@ Automation and docs:
   `linux.account.history_disabled`.
 - Anti-rootkit hidden-module detection also consults `/proc/kallsyms` symbol
   tags (as review context, not an auto-flag, to avoid built-in-subsystem noise).
+- Extended attributes are collected from home, temp and opt paths
+  (`15_Filesystem/extended_attributes.txt`), with `user.*` attributes - an
+  uncommon data-hiding technique - listed separately.
 
 ### Verification
 

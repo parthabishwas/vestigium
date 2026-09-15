@@ -358,7 +358,9 @@ excludes the evidence output and the Vestigium kit; listings of `/tmp`
 executables in temporary directories (with type and hash) and copies of the
 small ones, 30-day modification and ctime timelines for system paths and home
 directories, a full MAC timeline CSV (UTC) in full mode, deleted-but-open
-files, and ext filesystem superblock data.
+files, and ext filesystem superblock data. Extended attributes are collected from home,
+temp and opt paths (`extended_attributes.txt`), with `user.*` attributes - an
+uncommon data-hiding technique - listed separately in `extended_attributes_user.txt`.
 
 **16_Containers** — Docker (containers, images, volumes, networks, full
 inspect, per-container processes and logs, daemon config, **socket exposure and

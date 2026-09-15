@@ -17,6 +17,11 @@ function Invoke-DFIRProcessCollection {
     $success = (Save-DFIRText -Context $Context -Name 'Get-Process TXT' -Path (Join-Path $Context.Paths.Processes 'Get-Process.txt') -ScriptBlock { Get-Process -ErrorAction SilentlyContinue | Sort-Object ProcessName | Format-Table -AutoSize }) -and $success
     $success = (Export-DFIRCsv -Context $Context -Name 'Win32_Process CSV' -Path (Join-Path $Context.Paths.Processes 'Win32_Process.csv') -ScriptBlock { Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId, ParentProcessId, Name, ExecutablePath, CommandLine, CreationDate, SessionId }) -and $success
     $success = (Export-DFIRCsv -Context $Context -Name 'Running Services CSV' -Path (Join-Path $Context.Paths.Processes 'RunningServices.csv') -ScriptBlock { Get-CimInstance Win32_Service -Filter "State='Running'" -ErrorAction SilentlyContinue | Select-Object Name, DisplayName, ProcessId, StartMode, PathName, StartName }) -and $success
+    # Named pipes: C2 frameworks and lateral-movement tooling expose named pipes.
+    $success = (Save-DFIRText -Context $Context -Name 'Named pipes' -Path (Join-Path $Context.Paths.Processes 'NamedPipes.txt') -ScriptBlock {
+        try { [System.IO.Directory]::GetFiles('\\.\pipe\') | ForEach-Object { $_ -replace '^\\\\\.\\pipe\\', '' } | Sort-Object }
+        catch { 'Named-pipe enumeration failed: ' + $_.Exception.Message }
+    }) -and $success
 
     Add-DFIRResult -Context $Context -Name 'Processes' -Success $success
     return $success

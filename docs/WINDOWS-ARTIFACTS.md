@@ -21,6 +21,13 @@ collection: the locked NTFS metadata and the locked registry hives.
 | `SAM`, `SECURITY`, `SYSTEM`, `SOFTWARE` (+ logs) | copied from the shadow copy | `05_Registry/Hives_VSS/_MACHINE/` | secretsdump.py / samdump2 -> local hashes, LSA secrets, cached domain creds |
 | Host firewall profiles + rules | `netsh advfirewall` | `08_Network/FirewallProfiles.txt`, `FirewallRules.txt` | disabled profile flagged as a finding |
 | BITS transfer jobs | `Get-BitsTransfer -AllUsers` | `08_Network/BitsTransfers.csv` | raw-IP or user-writable-path jobs flagged as a finding |
+| Alternate data streams | `Get-Item -Stream *` over user-writable dirs | `21_FileSystem/AlternateDataStreams.csv` | Zone.Identifier download provenance, ADS-hidden payloads |
+| Staging archives | recursive listing | `21_FileSystem/StagingArchives.csv` | zip/rar/7z/... in Temp/AppData/Users\Public |
+| Windows Error Reporting | `Report.wer` copy | `21_FileSystem/WER/` | crash/injection evidence (no dumps) |
+| Certificate stores | `Cert:` provider | `01_System/CertificateStores.csv` | rogue root CAs |
+| Named pipes | `\\.\pipe\` listing | `02_Processes/NamedPipes.txt` | C2 / lateral-movement pipes |
+| WinRM state | `winrm get/enumerate` | `08_Network/WinRM.txt` | remote-management surface |
+| Office macro trust records | per-user Office hive export | `05_Registry/TargetUser_*_Office.reg` | TrustRecords, VBAWarnings, MRU |
 | LNK shortcuts, Jump Lists | per-profile `Recent`, `AutomaticDestinations`, `CustomDestinations` | `17_Execution/UserArtifacts/<user>/` + `index.csv` | LECmd / JLECmd |
 | `$Recycle.Bin` | `$I` index files + `$I`/`$R` listing (no `$R` blobs) | `21_FileSystem/RecycleBin/<SID>/` + `index.csv` | RBCmd |
 | Defender MPLog | most recent `MPLog-*` / `MPDetection-*` | `12_Defender/MPLog/` | text |

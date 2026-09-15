@@ -206,5 +206,27 @@ dfir_module_filesystem() {
         done
         exit 0'
 
+    # --- Extended attributes ----------------------------------------------
+    # xattrs can hide data (user.*) or carry SELinux/other security labels.
+    # user.* attributes are uncommon on a normal desktop/server and are a known
+    # data-hiding technique, so they get their own flagged file.
+    if command -v getfattr >/dev/null 2>&1; then
+        dfir_sh "extended attributes (home, temp, opt)" "${d}/extended_attributes.txt" '
+            for base in /root /home/* /tmp /var/tmp /dev/shm /opt /usr/local; do
+                [ -e "$base" ] || continue
+                getfattr -R -h -d -m "." --absolute-names "$base" 2>/dev/null
+            done
+            exit 0'
+        dfir_sh "user.* extended attributes (uncommon; can hide data)" "${d}/extended_attributes_user.txt" '
+            for base in /root /home/* /tmp /var/tmp /dev/shm /opt /usr/local; do
+                [ -e "$base" ] || continue
+                getfattr -R -h -d -m "^user\\." --absolute-names "$base" 2>/dev/null
+            done
+            exit 0'
+    else
+        printf "getfattr (attr package) is not available; extended attributes were not collected.\n" \
+            > "${d}/extended_attributes-NOT-COLLECTED.txt"
+    fi
+
     return 0
 }

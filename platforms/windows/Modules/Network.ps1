@@ -46,6 +46,18 @@ function Invoke-DFIRNetworkCollection {
         }
     }) -and $success
 
+    # WinRM / remote-management state (lateral-movement surface).
+    $success = (Save-DFIRText -Context $Context -Name 'WinRM state' -Path (Join-Path $Context.Paths.Network 'WinRM.txt') -ScriptBlock {
+        $svc = Get-Service -Name WinRM -ErrorAction SilentlyContinue
+        'WinRM service status: ' + $(if ($svc) { [string]$svc.Status } else { 'not found' })
+        ''
+        '=== winrm get winrm/config ==='
+        try { & winrm get winrm/config 2>&1 } catch { 'winrm config unavailable: ' + $_.Exception.Message }
+        ''
+        '=== winrm enumerate winrm/config/listener ==='
+        try { & winrm enumerate winrm/config/listener 2>&1 } catch { 'winrm listeners unavailable: ' + $_.Exception.Message }
+    }) -and $success
+
     $hostsSource = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
     $hostsDest = Join-Path $Context.Paths.Hosts 'hosts'
     $success = (Copy-DFIRFile -Context $Context -Source $hostsSource -Destination $hostsDest) -and $success

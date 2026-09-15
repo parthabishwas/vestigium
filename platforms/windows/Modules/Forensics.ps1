@@ -34,9 +34,156 @@ function Invoke-DFIRForensicsCollection {
     $success = (Export-DFIRRecycleBin -Context $Context) -and $success
     $success = (Copy-DFIRDefenderMpLog -Context $Context) -and $success
     $success = (Export-DFIRClockOffset -Context $Context) -and $success
+    $success = (Export-DFIRAlternateDataStreams -Context $Context) -and $success
+    $success = (Export-DFIRStagingArchives -Context $Context) -and $success
+    $success = (Copy-DFIRWerReports -Context $Context) -and $success
 
     Add-DFIRResult -Context $Context -Name 'Forensics' -Success $success
     return $success
+}
+
+function Get-DFIRForensicsTargetDirs {
+<#
+.SYNOPSIS
+    High-signal, user-writable directories to sweep for ADS and staging archives.
+.OUTPUTS
+    System.String[]
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $dirs = New-Object System.Collections.ArrayList
+    $profiles = @()
+    if ($Context.ContainsKey('TargetProfiles') -and $Context['TargetProfiles']) { $profiles = @($Context['TargetProfiles']) }
+    foreach ($profile in $profiles) {
+        $pp = [string](Get-DFIRObjectProperty -InputObject $profile -Name 'ProfilePath')
+        if (-not $pp) { continue }
+        foreach ($sub in @('\Downloads', '\Desktop', '\Documents', '\AppData\Local\Temp')) {
+            [void]$dirs.Add($pp + $sub)
+        }
+    }
+    if ($env:ProgramData) { [void]$dirs.Add((Join-Path $env:ProgramData 'Temp')) }
+    if ($env:SystemRoot)  { [void]$dirs.Add((Join-Path $env:SystemRoot 'Temp')) }
+    if ($env:SystemDrive) { [void]$dirs.Add((Join-Path $env:SystemDrive 'Users\Public')) }
+    return @($dirs | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique)
+}
+
+function Export-DFIRAlternateDataStreams {
+<#
+.SYNOPSIS
+    Records NTFS alternate data streams (Zone.Identifier download provenance and
+    ADS-hidden payloads) under user-writable directories.
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $maxFiles = 40000
+    $maxRows = 6000
+    $seen = 0
+    $rows = New-Object System.Collections.ArrayList
+    foreach ($dir in (Get-DFIRForensicsTargetDirs -Context $Context)) {
+        if ($rows.Count -ge $maxRows) { break }
+        $files = @()
+        try { $files = Get-ChildItem -LiteralPath $dir -Recurse -File -Force -ErrorAction SilentlyContinue }
+        catch { $files = @() }
+        foreach ($f in $files) {
+            if ($seen -ge $maxFiles -or $rows.Count -ge $maxRows) { break }
+            $seen++
+            $streams = @()
+            try { $streams = Get-Item -LiteralPath $f.FullName -Stream * -ErrorAction SilentlyContinue }
+            catch { $streams = @() }
+            foreach ($st in $streams) {
+                $name = [string](Get-DFIRObjectProperty -InputObject $st -Name 'Stream')
+                if (-not $name -or $name -eq ':$DATA') { continue }
+                [void]$rows.Add([pscustomobject]@{
+                    Path   = $f.FullName
+                    Stream = $name
+                    Length = (Get-DFIRObjectProperty -InputObject $st -Name 'Length')
+                    Zone   = $(if ($name -eq 'Zone.Identifier') { 'download-mark' } else { '' })
+                })
+                if ($rows.Count -ge $maxRows) { break }
+            }
+        }
+    }
+
+    $out = Join-Path $Context.Paths.FileSystem 'AlternateDataStreams.csv'
+    $data = @($rows)
+    return Export-DFIRCsv -Context $Context -Name 'Alternate data streams' -Path $out -ScriptBlock ({ $data }.GetNewClosure())
+}
+
+function Export-DFIRStagingArchives {
+<#
+.SYNOPSIS
+    Lists archive files in user-writable staging locations (collection/exfil prep).
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $exts = '\.(zip|rar|7z|cab|tar|gz|tgz|bz2|iso|ace|arj)$'
+    $maxRows = 5000
+    $rows = New-Object System.Collections.ArrayList
+    foreach ($dir in (Get-DFIRForensicsTargetDirs -Context $Context)) {
+        if ($rows.Count -ge $maxRows) { break }
+        $files = @()
+        try { $files = Get-ChildItem -LiteralPath $dir -Recurse -File -Force -ErrorAction SilentlyContinue }
+        catch { $files = @() }
+        foreach ($f in $files) {
+            if ($f.Name -notmatch $exts) { continue }
+            [void]$rows.Add([pscustomobject]@{
+                Path         = $f.FullName
+                SizeBytes    = $f.Length
+                LastWriteUtc = $f.LastWriteTimeUtc.ToString('o')
+                CreatedUtc   = $f.CreationTimeUtc.ToString('o')
+            })
+            if ($rows.Count -ge $maxRows) { break }
+        }
+    }
+
+    $out = Join-Path $Context.Paths.FileSystem 'StagingArchives.csv'
+    $data = @($rows)
+    return Export-DFIRCsv -Context $Context -Name 'Staging archives' -Path $out -ScriptBlock ({ $data }.GetNewClosure())
+}
+
+function Copy-DFIRWerReports {
+<#
+.SYNOPSIS
+    Copies Windows Error Reporting metadata (Report.wer) - crash/injection
+    evidence - without the large crash dumps.
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $destRoot = Join-Path $Context.Paths.FileSystem 'WER'
+    $sources = New-Object System.Collections.ArrayList
+    if ($env:ProgramData) { [void]$sources.Add((Join-Path $env:ProgramData 'Microsoft\Windows\WER')) }
+    $profiles = @()
+    if ($Context.ContainsKey('TargetProfiles') -and $Context['TargetProfiles']) { $profiles = @($Context['TargetProfiles']) }
+    foreach ($profile in $profiles) {
+        $la = [string](Get-DFIRObjectProperty -InputObject $profile -Name 'LocalAppData')
+        if ($la) { [void]$sources.Add((Join-Path $la 'Microsoft\Windows\WER')) }
+    }
+
+    $count = 0
+    foreach ($src in @($sources | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $src -PathType Container)) { continue }
+        $wers = @()
+        try { $wers = Get-ChildItem -LiteralPath $src -Recurse -File -Force -Filter '*.wer' -ErrorAction SilentlyContinue }
+        catch { $wers = @() }
+        foreach ($w in $wers) {
+            $rel = $w.FullName
+            if ($rel.Length -gt 3 -and $rel.Substring(1,1) -eq ':') { $rel = $rel.Substring(3) }
+            $out = Join-Path $destRoot $rel
+            if (Copy-DFIRFile -Context $Context -Source $w.FullName -Destination $out) { $count++ }
+        }
+    }
+    Write-DFIRLog -Context $Context -Message ("WER report metadata copied: {0} .wer file(s)" -f $count)
+    return $true
 }
 
 function New-DFIRShadowCopy {

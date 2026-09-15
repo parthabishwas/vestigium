@@ -119,6 +119,7 @@ function Export-DFIRTargetUserRegistryPersistence {
                 Policies_Run     = "$hiveRoot\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run"
                 Winlogon         = "$hiveRoot\Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
                 Explorer_Startup = "$hiveRoot\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved"
+                Office           = "$hiveRoot\Software\Microsoft\Office"
             }
 
             foreach ($name in $userKeys.Keys) {

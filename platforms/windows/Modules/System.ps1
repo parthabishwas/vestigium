@@ -17,9 +17,43 @@ function Invoke-DFIRSystemCollection {
     $success = (Export-DFIRInstalledApplications -Context $Context) -and $success
     $success = (Export-DFIRScheduledTasks -Context $Context) -and $success
     $success = (Export-DFIRSystemInformation -Context $Context) -and $success
+    $success = (Export-DFIRCertificateStores -Context $Context) -and $success
 
     Add-DFIRResult -Context $Context -Name 'System' -Success $success
     return $success
+}
+
+function Export-DFIRCertificateStores {
+<#
+.SYNOPSIS
+    Inventories machine and current-user certificate stores (rogue root CAs are a
+    persistence / MITM signal).
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $out = Join-Path $Context.Paths.System 'CertificateStores.csv'
+    return Export-DFIRCsv -Context $Context -Name 'Certificate stores' -Path $out -ScriptBlock {
+        $stores = @('Cert:\LocalMachine\Root', 'Cert:\LocalMachine\CA', 'Cert:\LocalMachine\My', 'Cert:\CurrentUser\Root')
+        foreach ($store in $stores) {
+            $certs = @()
+            try { $certs = Get-ChildItem -Path $store -ErrorAction SilentlyContinue }
+            catch { $certs = @() }
+            foreach ($c in $certs) {
+                [pscustomobject]@{
+                    Store         = $store
+                    Subject       = $c.Subject
+                    Issuer        = $c.Issuer
+                    Thumbprint    = $c.Thumbprint
+                    NotBeforeUtc  = $(try { $c.NotBefore.ToUniversalTime().ToString('o') } catch { '' })
+                    NotAfterUtc   = $(try { $c.NotAfter.ToUniversalTime().ToString('o') } catch { '' })
+                    HasPrivateKey = $c.HasPrivateKey
+                }
+            }
+        }
+    }
 }
 
 function Export-DFIRAssetInfo {

@@ -138,7 +138,8 @@ function Get-DFIRTaskRunAsMap {
 function Get-DFIRFindingAvDetection {
 <#
 .SYNOPSIS
-    windows.malware.av_detection (critical) from carved ESET strings and Defender detections.
+    windows.malware.av_detection (critical): threat detections recorded by any
+    collected antivirus / EDR product, labelled with the product name.
 .OUTPUTS
     System.Collections.Specialized.OrderedDictionary or $null
 #>
@@ -147,36 +148,127 @@ function Get-DFIRFindingAvDetection {
 
     $hits = New-Object System.Collections.ArrayList
     $evidence = New-Object System.Collections.ArrayList
+    $vendors = New-Object System.Collections.ArrayList
+    $detectRe = '(?i)\b(threat|virus|trojan|malware|ransom|spyware|worm|rootkit|backdoor|exploit|riskware|infected|quarantin|detected|blocked|suspicious|pua|potentially unwanted|heur|gen:variant|win32/|win64/|hacktool)\b'
+    # Exclude benign "nothing found" lines that merely contain a detection word
+    # (e.g. "no threats detected", "0 detected", "threats found: 0", "clean").
+    $negativeRe = '(?i)(\bno\b[^.]{0,30}\b(threat|virus|malware|detection|infected|item|object)|not (detected|infected)|\b0\s+(threat|detection|infection|item|object|detected|infected|found)|(threat|detection|infection)s?\s*(found|detected)?\s*[:=]?\s*0\b|\bclean\b)'
 
-    $esetDir = Join-Path $Context.Paths.Defender 'ESET'
-    if (Test-Path -LiteralPath $esetDir -PathType Container) {
-        Get-ChildItem -LiteralPath $esetDir -Filter '*.strings.txt' -File -Recurse -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                $sourceName = $_.Name
-                Get-Content -LiteralPath $_.FullName -ErrorAction SilentlyContinue |
-                    Where-Object { $_ -match '^@[A-Za-z]' -and $_.Length -gt 8 } |
-                    Select-Object -Unique |
-                    ForEach-Object { [void]$hits.Add(('ESET  {0}  (in {1})' -f $_, $sourceName)) }
-            }
-        [void]$evidence.Add('12_Defender/ESET')
-    }
-
+    # Microsoft Defender: structured detection records.
     $mpThreat = Join-Path $Context.Paths.Defender 'MpThreatDetection.csv'
-    foreach ($row in (Get-DFIRFindingCsvRows -Path $mpThreat)) {
-        $name = Get-DFIRObjectProperty -InputObject $row -Name 'ThreatID'
-        $res = Get-DFIRObjectProperty -InputObject $row -Name 'Resources'
-        [void]$hits.Add(('Defender  ThreatID={0}  {1}' -f $name, $res))
+    $mpRows = @(Get-DFIRFindingCsvRows -Path $mpThreat)
+    if ($mpRows.Count -gt 0) {
+        [void]$vendors.Add('Microsoft Defender')
+        foreach ($row in $mpRows) {
+            $tid = Get-DFIRObjectProperty -InputObject $row -Name 'ThreatID'
+            $res = Get-DFIRObjectProperty -InputObject $row -Name 'Resources'
+            [void]$hits.Add(('Microsoft Defender  ThreatID={0}  {1}' -f $tid, $res))
+        }
+        [void]$evidence.Add('12_Defender/MpThreatDetection.csv')
     }
-    if (Test-Path -LiteralPath $mpThreat -PathType Leaf) { [void]$evidence.Add('12_Defender/MpThreatDetection.csv') }
+
+    # Third-party AV/EDR: every 12_Defender subdirectory is a vendor's collected
+    # logs. Scan carved strings and text logs for detection-indicative lines and
+    # label each by the vendor (the folder name, mapped to a canonical name).
+    if (Test-Path -LiteralPath $Context.Paths.Defender -PathType Container) {
+        Get-ChildItem -LiteralPath $Context.Paths.Defender -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $vendorDir = $_
+            $vendor = Get-DFIRSecurityVendorName -Text $vendorDir.Name
+            if (-not $vendor) { $vendor = $vendorDir.Name }
+            $vendorHit = $false
+            Get-ChildItem -LiteralPath $vendorDir.FullName -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '(?i)\.(strings\.txt|log|txt|csv)$' } |
+                ForEach-Object {
+                    $isCarved = ($_.Name -match '(?i)\.strings\.txt$')
+                    Get-Content -LiteralPath $_.FullName -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $_ -and $_.Length -gt 8 -and
+                            (($isCarved -and $_ -match '^@[A-Za-z]') -or ($_ -match $detectRe)) -and
+                            ($_ -notmatch $negativeRe)
+                        } |
+                        Select-Object -First 200 -Unique |
+                        ForEach-Object {
+                            $line = $_.Trim()
+                            if ($line.Length -gt 300) { $line = $line.Substring(0, 300) + '...' }
+                            [void]$hits.Add(('{0}  {1}  (in {2})' -f $vendor, $line, $vendorDir.Name))
+                            $vendorHit = $true
+                        }
+                }
+            if ($vendorHit) {
+                [void]$vendors.Add($vendor)
+                [void]$evidence.Add('12_Defender/' + $vendorDir.Name)
+            }
+        }
+    }
 
     $unique = @($hits | Select-Object -Unique)
     if ($unique.Count -eq 0) { return $null }
+    if ($unique.Count -gt 200) { $unique = @($unique[0..199]) }
 
-    return New-DFIRFinding -Id 'windows.malware.av_detection' -Title 'Antivirus detection recorded on this host' `
+    $vendorList = @($vendors | Select-Object -Unique)
+    $vendorText = if ($vendorList.Count -gt 0) { $vendorList -join ', ' } else { 'an antivirus product' }
+
+    return New-DFIRFinding -Id 'windows.malware.av_detection' -Title ('Antivirus detection recorded on this host ({0})' -f $vendorText) `
         -Severity 'critical' -Category 'malware' -Count $unique.Count `
-        -Summary 'A collected ESET or Microsoft Defender record names a detected threat.' `
-        -Evidence @($evidence) -Items $unique `
-        -Note 'Confirm each against the raw vendor log; absence elsewhere is only as good as the vendor log retention.'
+        -Summary ('Collected antivirus / EDR records name detected threats. Product(s): {0}.' -f $vendorText) `
+        -Evidence @($evidence | Select-Object -Unique) -Items $unique `
+        -Note 'Each item is prefixed with the product that recorded it. Confirm against the raw vendor log; a clean result is only as good as that product''s log retention.'
+}
+
+function Get-DFIRFindingAvProducts {
+<#
+.SYNOPSIS
+    windows.security.av_products (info): antivirus products registered with the
+    Windows Security Center, by name and real-time / definition state.
+.OUTPUTS
+    System.Collections.Specialized.OrderedDictionary or $null
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $path = Join-Path $Context.Paths.Defender 'SecurityCenter_Products.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+
+    $products = $null
+    try { $products = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
+    catch { return $null }
+    if ($null -eq $products) { return $null }
+
+    $items = New-Object System.Collections.ArrayList
+    $anyDisabled = $false
+    foreach ($p in @($products)) {
+        $name = [string](Get-DFIRObjectProperty -InputObject $p -Name 'displayName')
+        if (-not $name) { continue }
+        $state = Get-DFIRObjectProperty -InputObject $p -Name 'productState'
+        $rt = 'unknown'; $defs = 'unknown'
+        if ($null -ne $state) {
+            try {
+                $hex = ('{0:X6}' -f [int]$state)
+                $rtNibble = $hex.Substring(2, 2)
+                $defNibble = $hex.Substring(4, 2)
+                $rt = if ($rtNibble -eq '10' -or $rtNibble -eq '11') { 'ON' } else { 'OFF' }
+                $defs = if ($defNibble -eq '00') { 'up-to-date' } else { 'OUT-OF-DATE' }
+            }
+            catch { $rt = 'unknown'; $defs = 'unknown' }
+        }
+        if ($rt -eq 'OFF') { $anyDisabled = $true }
+        [void]$items.Add(('{0}  (real-time: {1}, definitions: {2})' -f $name, $rt, $defs))
+    }
+
+    if ($items.Count -eq 0) { return $null }
+
+    $sev = if ($anyDisabled) { 'medium' } else { 'info' }
+    $summary = if ($anyDisabled) {
+        'Antivirus products registered on this host; at least one has real-time protection OFF (possible defence evasion).'
+    } else {
+        'Antivirus products registered with the Windows Security Center, by name and state.'
+    }
+
+    return New-DFIRFinding -Id 'windows.security.av_products' -Title 'Antivirus products registered on this host' `
+        -Severity $sev -Category 'integrity' -Count $items.Count `
+        -Summary $summary `
+        -Evidence @('12_Defender/SecurityCenter_Products.json', '12_Defender/InstalledSecuritySoftware.csv') -Items @($items) `
+        -Note 'Registration means the product is known to Windows, not that it is actively protecting the host; confirm state against the product console.'
 }
 
 function Get-DFIRFindingYara {
@@ -590,6 +682,7 @@ function Get-DFIRFindingsDocument {
     $findings = New-Object System.Collections.ArrayList
     $builders = @(
         (Get-DFIRFindingAvDetection -Context $Context),
+        (Get-DFIRFindingAvProducts -Context $Context),
         (Get-DFIRFindingYara -Context $Context),
         (Get-DFIRFindingAutoruns -Context $Context),
         (Get-DFIRFindingSystemTasks -Context $Context),

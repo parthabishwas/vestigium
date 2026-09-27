@@ -150,6 +150,17 @@ Automation and docs:
 
 ### Deeper artifact coverage
 
+- Antivirus / EDR detection coverage broadened beyond ESET and Microsoft
+  Defender. `setup`-independent collection now gathers logs from Sophos,
+  Kaspersky, Bitdefender, McAfee/Trellix, Symantec/Norton, Trend Micro, Avast,
+  AVG, Webroot, CrowdStrike and SentinelOne when present (each in its own
+  `12_Defender\<vendor>\`). The `windows.malware.av_detection` finding scans
+  every collected vendor's logs, names the product that recorded each threat
+  in the title and per item, and filters benign "no threats detected" lines.
+  A new `windows.security.av_products` finding names each antivirus registered
+  with the Windows Security Center and its real-time / definition state
+  (medium when a product's real-time protection is off).
+
 **Windows** (new `Forensics` step; see [docs/WINDOWS-ARTIFACTS.md](docs/WINDOWS-ARTIFACTS.md)):
 - `$MFT`, `$LogFile` and the USN journal acquired through a Volume Shadow Copy
   (with a live `fsutil usn readjournal` fallback) into `21_FileSystem/` for

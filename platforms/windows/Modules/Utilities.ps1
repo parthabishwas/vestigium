@@ -1465,6 +1465,47 @@ function Copy-DFIREsentutlVss {
     return $true
 }
 
+function Get-DFIRSecurityVendorPattern {
+<#
+.SYNOPSIS
+    Regex matching common antivirus / EDR vendor and product names.
+.DESCRIPTION
+    One source of truth for "is this an AV/EDR product" across the collector, so
+    installed-software filtering and findings recognise the same vendors.
+.OUTPUTS
+    System.String
+#>
+    return 'Microsoft Defender|Windows Defender|Defender for Endpoint|System Center Endpoint|Malwarebytes|ESET|NOD32|Sophos|Symantec|Norton|McAfee|Trellix|Kaspersky|Bitdefender|GravityZone|Trend Micro|OfficeScan|Apex One|Avast|AVG|Avira|Webroot|F-Secure|WithSecure|Comodo|Panda|G Data|GDATA|Qihoo|360 Total|Fortinet|FortiClient|CrowdStrike|Falcon|SentinelOne|Sentinel Agent|Cylance|Carbon Black|Cortex XDR|Palo Alto|Cybereason|Elastic Endpoint|Huntress|Sophos Intercept|Emsisoft|K7|Immunet|VIPRE|Cisco Secure Endpoint|AMP for Endpoints|Deep Instinct|Check Point|ZoneAlarm'
+}
+
+function Get-DFIRSecurityVendorName {
+<#
+.SYNOPSIS
+    Returns the canonical AV/EDR vendor name found in a free-text string, or ''.
+.OUTPUTS
+    System.String
+#>
+    [CmdletBinding()]
+    param([AllowEmptyString()][AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    # Ordered longest/most-specific first so "Microsoft Defender" wins over "Defender".
+    $vendors = @(
+        'Microsoft Defender', 'Windows Defender', 'Defender for Endpoint', 'System Center Endpoint',
+        'Malwarebytes', 'ESET', 'NOD32', 'Sophos Intercept', 'Sophos', 'Symantec', 'Norton',
+        'Trellix', 'McAfee', 'Kaspersky', 'GravityZone', 'Bitdefender', 'Trend Micro', 'Apex One',
+        'OfficeScan', 'Avast', 'AVG', 'Avira', 'Webroot', 'WithSecure', 'F-Secure', 'Comodo',
+        'Panda', 'G Data', 'GDATA', 'Qihoo', '360 Total', 'FortiClient', 'Fortinet', 'CrowdStrike',
+        'Falcon', 'SentinelOne', 'Sentinel Agent', 'Cylance', 'Carbon Black', 'Cortex XDR',
+        'Palo Alto', 'Cybereason', 'Elastic Endpoint', 'Huntress', 'Emsisoft', 'VIPRE',
+        'Cisco Secure Endpoint', 'AMP for Endpoints', 'Deep Instinct', 'Check Point', 'ZoneAlarm', 'K7', 'Immunet'
+    )
+    foreach ($v in $vendors) {
+        if ($Text -match [regex]::Escape($v)) { return $v }
+    }
+    return ''
+}
+
 function Copy-DFIRRawCopy {
 <#
 .SYNOPSIS

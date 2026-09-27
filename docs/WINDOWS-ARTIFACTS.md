@@ -80,6 +80,16 @@ adjusts to say whether `$MFT`/`$UsnJrnl` were actually acquired.
 8. **Verify** `.\vestigium.ps1 verify C:\ev\<pkg>.zip` passes and lists the new
    files in the hash inventory.
 
+## Antivirus / EDR detections
+
+The Defender step collects Microsoft Defender status and threat records plus
+the logs of other AV/EDR products when present (Sophos, Kaspersky, Bitdefender,
+McAfee/Trellix, Symantec/Norton, Trend Micro, Avast, AVG, Webroot, CrowdStrike,
+SentinelOne), each in `12_Defender/<vendor>/`. Two findings summarise this:
+`windows.malware.av_detection` (critical) names the product that recorded each
+threat, and `windows.security.av_products` names every AV registered with the
+Windows Security Center and its real-time / definition state.
+
 ## PowerShell 5.1 risks to watch
 
 - `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN` path handling by

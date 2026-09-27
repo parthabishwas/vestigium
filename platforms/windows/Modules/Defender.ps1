@@ -40,6 +40,28 @@ function Invoke-DFIRDefenderCollection {
         (Join-Path $env:ProgramData 'ESET\ESET Smart Security\Logs')
     ) -ProductNamePattern 'ESET' -CarveStrings) -and $success
 
+    # Other common AV/EDR products: copy their log trees (string-carved so
+    # detection names are readable without a vendor parser). Each lands in its
+    # own 12_Defender\<vendor>\ folder, which the findings step scans by vendor.
+    $vendorLogs = @(
+        @{ Name = 'Sophos';       Pattern = 'Sophos';       Paths = @((Join-Path $env:ProgramData 'Sophos\Sophos Anti-Virus\logs'), (Join-Path $env:ProgramData 'Sophos\Clean\Logs'), (Join-Path $env:ProgramData 'Sophos\Endpoint Defense\Logs')) },
+        @{ Name = 'Kaspersky';    Pattern = 'Kaspersky';    Paths = @((Join-Path $env:ProgramData 'Kaspersky Lab'), (Join-Path $env:ProgramData 'Kaspersky Lab Setup Files')) },
+        @{ Name = 'Bitdefender';  Pattern = 'Bitdefender';  Paths = @((Join-Path $env:ProgramData 'Bitdefender\Desktop\Profiles\Logs'), (Join-Path $env:ProgramData 'Bitdefender\Endpoint Security\Logs')) },
+        @{ Name = 'McAfee';       Pattern = 'McAfee|Trellix'; Paths = @((Join-Path $env:ProgramData 'McAfee\Endpoint Security\Logs'), (Join-Path $env:ProgramData 'McAfee\DesktopProtection'), (Join-Path $env:ProgramData 'Trellix\Endpoint Security\Logs')) },
+        @{ Name = 'Symantec';     Pattern = 'Symantec|Norton'; Paths = @((Join-Path $env:ProgramData 'Symantec\Symantec Endpoint Protection\Logs'), (Join-Path $env:ProgramData 'Norton\Logs')) },
+        @{ Name = 'TrendMicro';   Pattern = 'Trend Micro';  Paths = @((Join-Path $env:ProgramData 'Trend Micro'), (Join-Path ${env:ProgramFiles(x86)} 'Trend Micro\Security Agent\Report')) },
+        @{ Name = 'Avast';        Pattern = 'Avast';        Paths = @((Join-Path $env:ProgramData 'Avast Software\Avast\log'), (Join-Path $env:ProgramData 'Avast Software\Persistent Data\Avast\Logs')) },
+        @{ Name = 'AVG';          Pattern = 'AVG';          Paths = @((Join-Path $env:ProgramData 'AVG\Antivirus\log'), (Join-Path $env:ProgramData 'AVG\Persistent Data\Antivirus\Logs')) },
+        @{ Name = 'Webroot';      Pattern = 'Webroot';      Paths = @((Join-Path $env:ProgramData 'WRData'), (Join-Path $env:ProgramData 'WRCore')) },
+        @{ Name = 'CrowdStrike';  Pattern = 'CrowdStrike|Falcon'; Paths = @((Join-Path $env:ProgramData 'CrowdStrike')) },
+        @{ Name = 'SentinelOne';  Pattern = 'SentinelOne|Sentinel Agent'; Paths = @((Join-Path $env:ProgramData 'Sentinel\Logs')) }
+    )
+    foreach ($v in $vendorLogs) {
+        $present = @($v.Paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+        if ($present.Count -eq 0) { continue }
+        $success = (Copy-DFIRSecurityProductLogs -Context $Context -ProductName $v.Name -CandidatePaths $v.Paths -ProductNamePattern $v.Pattern -CarveStrings) -and $success
+    }
+
     $success = (Export-DFIRInstalledSecurityProducts -Context $Context) -and $success
 
     Add-DFIRResult -Context $Context -Name 'Defender' -Success $success
@@ -103,8 +125,9 @@ function Export-DFIRInstalledSecurityProducts {
                 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
                 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
             )
+            $avPattern = Get-DFIRSecurityVendorPattern
             Get-ItemProperty -Path $roots -ErrorAction SilentlyContinue |
-                Where-Object { $dn = Get-DFIRObjectProperty -InputObject $_ -Name 'DisplayName'; $dn -and ($dn -match 'Malwarebytes|ESET|Defender|Sophos|Symantec|McAfee|Kaspersky|Trend Micro|CrowdStrike|SentinelOne|Bitdefender|Avast|AVG|Norton|Webroot|Cylance|Carbon Black') } |
+                Where-Object { $dn = Get-DFIRObjectProperty -InputObject $_ -Name 'DisplayName'; $dn -and ($dn -match $avPattern) } |
                 Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, InstallLocation
         }) -and $success
 

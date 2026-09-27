@@ -150,6 +150,12 @@ Automation and docs:
 
 ### Deeper artifact coverage
 
+- The Windows collector now strips Mark-of-the-Web from its modules before
+  dot-sourcing them, and `setup` unblocks the binaries it downloads. This stops
+  the per-module PowerShell "Run only scripts that you trust" prompt that a
+  downloaded kit triggers under a RemoteSigned policy. Manual fallback for
+  read-only media: `Get-ChildItem -Recurse <kit> | Unblock-File`.
+
 - Antivirus / EDR detection coverage broadened beyond ESET and Microsoft
   Defender. `setup`-independent collection now gathers logs from Sophos,
   Kaspersky, Bitdefender, McAfee/Trellix, Symantec/Norton, Trend Micro, Avast,

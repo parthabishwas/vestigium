@@ -481,6 +481,13 @@ if ($usageErrors.Count -gt 0) {
 
 try {
     foreach ($modulePath in (Get-DFIRModulePaths -RootPath $script:VestigiumScriptRoot)) {
+        # Strip Mark-of-the-Web before dot-sourcing. A kit copied or unzipped from
+        # a download tags every .ps1 as "from the internet"; under a RemoteSigned
+        # policy (often enforced by Group Policy, which overrides -ExecutionPolicy
+        # Bypass) PowerShell then prompts "Run only scripts that you trust" for
+        # each module. Unblocking here suppresses that. Read-only media -> the
+        # unblock quietly fails and the operator unblocks the kit by hand.
+        try { Unblock-File -LiteralPath $modulePath -ErrorAction SilentlyContinue } catch { }
         . $modulePath
     }
 }

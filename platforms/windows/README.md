@@ -67,6 +67,22 @@ Rules are read from `<KitRoot>\shared\yara-rules\active-rules.yar`, falling back
 powershell.exe -ExecutionPolicy Bypass -File .\platforms\windows\Tools\Update-YaraRules.ps1 [-Locked] [-SkipGitUpdate] [-RulesRoot <dir>] [-YaracPath <yarac>]  # rules builder only
 ```
 
+## Script security warnings (Mark-of-the-Web)
+
+A kit copied or unzipped from a download tags every file as "from the
+internet" (Mark-of-the-Web). Under a `RemoteSigned` execution policy - often
+enforced by Group Policy, which overrides the launcher's `-ExecutionPolicy
+Bypass` - PowerShell then prompts *"Run only scripts that you trust"* before
+each module. The collector strips Mark-of-the-Web from its own modules before
+loading them, and `setup` unblocks the tools it downloads, so this is handled
+automatically. If you still see the prompt (for example the kit is on
+read-only media, or the entry script itself is blocked), unblock the whole kit
+once after copying it:
+
+```powershell
+Get-ChildItem -Recurse -LiteralPath <kit path> | Unblock-File
+```
+
 ## Helper binaries
 
 `yara64.exe`, `yarac64.exe`, `winpmem_mini_x64*.exe`, `Autorunsc64.exe` and `RawCopy64.exe` are not shipped in

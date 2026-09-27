@@ -204,6 +204,9 @@ foreach ($t in $tools) {
         }
 
         Copy-Item -LiteralPath $payload -Destination $dest -Force -ErrorAction Stop
+        # Downloaded binaries carry Mark-of-the-Web; strip it so running them does
+        # not trip SmartScreen / "Open File - Security Warning" during a collection.
+        try { Unblock-File -LiteralPath $dest -ErrorAction SilentlyContinue } catch { }
         if ($pin) {
             Write-ToolLog -Level 'OK' -Message ("{0}: staged (sha256 {1}, matches pin)" -f $name, $sha)
         }

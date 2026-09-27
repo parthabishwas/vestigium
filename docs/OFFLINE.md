@@ -64,6 +64,13 @@ builds rules only; `setup --verify` reports what is staged without changing it.
 
 ## Host prerequisites (cannot be shipped)
 
+> **Script security prompts:** a downloaded/unzipped kit is tagged
+> Mark-of-the-Web; under a RemoteSigned policy PowerShell prompts per script.
+> The collector unblocks its own modules and `setup` unblocks downloaded
+> tools; if prompts persist, run `Get-ChildItem -Recurse <kit> | Unblock-File`
+> once after copying.
+
+
 These must already exist on the evidence host:
 
 - **Linux:** `bash` 4.4+, plus core system utilities. `python3` is needed for the

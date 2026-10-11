@@ -87,6 +87,11 @@ sudo ./vestigium.sh --case-id IR-2026-014 \
 vestigium.cmd -CaseId IR-2026-014 ^
   -OutputPath E:\Evidence
 
+rem also scan/acquire other drives
+vestigium.cmd -CaseId IR-2026-014 ^
+  -OutputPath E:\Evidence ^
+  -ScanDrives D:,F:
+
 vestigium.cmd verify ^
   E:\Evidence\<HOST>_<timestamp>.zip
 ```
@@ -96,6 +101,12 @@ vestigium.cmd verify ^
 
 A bare run (`sudo ./vestigium.sh`) performs a full collection with an
 auto-generated case ID.
+
+On Windows, `-ScanDrives D:,F:` extends the YARA scan and NTFS-metadata
+acquisition (`$MFT`, `$LogFile`, USN journal) to the named non-system volumes;
+the system drive is always covered. See
+[platforms/windows/README.md](platforms/windows/README.md) and
+[docs/WINDOWS-ARTIFACTS.md](docs/WINDOWS-ARTIFACTS.md).
 
 ## How it works
 

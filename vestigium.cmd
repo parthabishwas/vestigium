@@ -15,6 +15,14 @@ setlocal DisableDelayedExpansion
 set "CT_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%CT_PS%" set "CT_PS=powershell.exe"
 
+rem Strip Mark-of-the-Web from the kit's scripts first. A kit copied or unzipped
+rem from a download tags every .ps1 as "from the internet"; under a RemoteSigned
+rem policy (often enforced by Group Policy, which overrides -ExecutionPolicy
+rem Bypass) PowerShell would otherwise prompt "Run only scripts that you trust"
+rem for each script, including this launcher's own .ps1 files. An inline -Command
+rem is not a script file, so it runs without that prompt and clears the block.
+"%CT_PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath '%~dp0.' -Recurse -Filter *.ps1 -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue" 1>nul 2>nul
+
 "%CT_PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0vestigium.ps1" %*
 set "CT_RC=%ERRORLEVEL%"
 

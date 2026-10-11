@@ -283,7 +283,15 @@ function Add-CTNamedPassThru {
 #>
     param([hashtable]$Splat, [string]$ScriptPath, [System.Collections.Generic.List[string]]$Items)
 
-    $parameters = (Get-Command -Name $ScriptPath -ErrorAction Stop).Parameters
+    # A kit copied from a download is Mark-of-the-Web tagged; under a RemoteSigned
+    # policy Get-Command cannot parse the blocked collector script, so .Parameters
+    # comes back $null and every option looks "unknown". Unblock it first.
+    try { Unblock-File -LiteralPath $ScriptPath -ErrorAction SilentlyContinue } catch { }
+    $parameters = $null
+    try { $parameters = (Get-Command -Name $ScriptPath -ErrorAction Stop).Parameters } catch { $parameters = $null }
+    if ($null -eq $parameters) {
+        Exit-CTUsage ("could not read the parameters of {0} (is it still blocked? run: Get-ChildItem -Recurse <kit> | Unblock-File)" -f (Split-Path -Leaf $ScriptPath))
+    }
     for ($i = 0; $i -lt $Items.Count; $i++) {
         $item = $Items[$i]
         if ($item -notmatch '^-([A-Za-z][A-Za-z0-9]*)(:(.*))?$') {

@@ -171,7 +171,13 @@ function Get-DFIRFindingAvDetection {
     # logs. Scan carved strings and text logs for detection-indicative lines and
     # label each by the vendor (the folder name, mapped to a canonical name).
     if (Test-Path -LiteralPath $Context.Paths.Defender -PathType Container) {
-        Get-ChildItem -LiteralPath $Context.Paths.Defender -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        # Folders under 12_Defender that are not third-party vendor logs: MPLog is
+        # Microsoft Defender's own verbose operational log (full of the words
+        # "threat"/"detection" in non-detection contexts) and would swamp this
+        # finding with noise; Defender detections come from MpThreatDetection.csv.
+        $skipDirs = @('MPLog')
+        Get-ChildItem -LiteralPath $Context.Paths.Defender -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $skipDirs -notcontains $_.Name } | ForEach-Object {
             $vendorDir = $_
             $vendor = Get-DFIRSecurityVendorName -Text $vendorDir.Name
             if (-not $vendor) { $vendor = $vendorDir.Name }

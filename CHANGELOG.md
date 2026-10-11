@@ -150,6 +150,20 @@ Automation and docs:
 
 ### Deeper artifact coverage
 
+- Fixes from a Windows 11 live run (BitLocker on D:):
+  - Recycle Bin acquisition no longer crashes with `Join-Path : Cannot find
+    drive 'D'` on a BitLocker-locked / inaccessible volume; the drive-root path
+    is built by string concatenation and each volume is isolated in try/catch.
+  - `-ScanDrives` works again: the launcher could not read the collector's
+    parameters when the kit was Mark-of-the-Web blocked (`$null.Keys` under
+    StrictMode), so it rejected `-ScanDrives` as unknown. It now unblocks and
+    introspects the collector safely.
+  - `vestigium.cmd` strips Mark-of-the-Web from every `.ps1` (via an inline
+    `-Command`) before launching, so the "Run only scripts that you trust"
+    prompt no longer appears for the entry scripts either.
+  - The AV-detection finding no longer treats Defender's `MPLog` folder as a
+    vendor (it was adding ~200 noisy keyword hits).
+
 - The Windows collector now strips Mark-of-the-Web from its modules before
   dot-sourcing them, and `setup` unblocks the binaries it downloads. This stops
   the per-module PowerShell "Run only scripts that you trust" prompt that a

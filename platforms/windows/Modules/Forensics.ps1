@@ -581,8 +581,15 @@ function Export-DFIRRecycleBin {
     if (-not $drives) { $drives = @($env:SystemDrive) }
 
     foreach ($drive in $drives) {
-        $bin = Join-Path ($drive + '\') '$Recycle.Bin'
-        if (-not (Test-Path -LiteralPath $bin -PathType Container)) { continue }
+      try {
+        # String concatenation, not Join-Path: Join-Path resolves the drive
+        # qualifier against PowerShell drives and throws DriveNotFound on a
+        # BitLocker-locked or otherwise inaccessible volume (which Win32_LogicalDisk
+        # still lists). "D:" + "\$Recycle.Bin" -> "D:\$Recycle.Bin" with no lookup.
+        $bin = $drive + '\$Recycle.Bin'
+        $binExists = $false
+        try { $binExists = Test-Path -LiteralPath $bin -PathType Container -ErrorAction Stop } catch { $binExists = $false }
+        if (-not $binExists) { continue }
         foreach ($sidDir in @(Get-ChildItem -LiteralPath $bin -Directory -Force -ErrorAction SilentlyContinue)) {
             $sid = $sidDir.Name
             foreach ($iFile in @(Get-ChildItem -LiteralPath $sidDir.FullName -Filter '$I*' -File -Force -ErrorAction SilentlyContinue)) {
@@ -603,6 +610,11 @@ function Export-DFIRRecycleBin {
                 })
             }
         }
+      }
+      catch {
+        Write-DFIRLog -Context $Context -Level WARN -Message ("Recycle Bin skipped for {0} (inaccessible - e.g. BitLocker-locked): {1}" -f $drive, $_.Exception.Message)
+        continue
+      }
     }
 
     if ($index.Count -gt 0) {

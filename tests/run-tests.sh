@@ -450,6 +450,50 @@ else
     skip "python3 not installed: Linux findings producer test"
 fi
 
+section "Archive and long-path resilience"
+# Windows live runs have hit files whose full path exceeds 260 characters (a
+# Recent-folder shortcut whose name is a whole URL). Such a file used to abort
+# the entire ZIP. Verify the \\?\ path helper and that New-DFIRZipArchive always
+# finishes the archive, reporting a skip count instead of throwing.
+if have pwsh; then
+    cat >"$WORK/ztest.ps1" <<'PS1'
+param([string]$Kit)
+$ErrorActionPreference = 'Stop'
+. (Join-Path $Kit 'platforms/windows/Modules/Utilities.ps1')
+
+# Extended-length prefix: only rooted local/UNC paths are rewritten.
+if ((Get-DFIRExtendedPath 'C:\a\b')       -ne '\\?\C:\a\b')         { throw 'local prefix' }
+if ((Get-DFIRExtendedPath '\\srv\share\x') -ne '\\?\UNC\srv\share\x') { throw 'unc prefix' }
+if ((Get-DFIRExtendedPath '\\?\C:\x')      -ne '\\?\C:\x')           { throw 'double prefix' }
+if ((Get-DFIRExtendedPath 'rel\path')      -ne 'rel\path')           { throw 'relative untouched' }
+
+# Happy path: a normal tree archives cleanly and reports 0 skips.
+$root = Join-Path ([System.IO.Path]::GetTempPath()) ('vz_' + [guid]::NewGuid().ToString('N').Substring(0,8))
+New-Item -ItemType Directory -Path $root -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $root 'a.txt') -Value 'alpha'
+New-Item -ItemType Directory -Path (Join-Path $root 'sub') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $root 'sub/b.txt') -Value 'bravo'
+$zip = Join-Path ([System.IO.Path]::GetTempPath()) ('vz_' + [guid]::NewGuid().ToString('N').Substring(0,8) + '.zip')
+$skipped = New-DFIRZipArchive -SourceRoot $root -ZipPath $zip
+if ($skipped -ne 0) { throw ('clean skip=' + $skipped) }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$za = [System.IO.Compression.ZipFile]::OpenRead($zip)
+$n = $za.Entries.Count; $za.Dispose()
+if ($n -ne 2) { throw ('entry count=' + $n) }
+Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+Write-Output 'ok'
+PS1
+    ar_out="$(pwsh -NoProfile -File "$WORK/ztest.ps1" "$KIT" 2>&1)"
+    if [[ "$(printf '%s' "$ar_out" | tail -n 1)" == ok ]]; then
+        pass "long-path helper and archive resilience"
+    else
+        fail "archive resilience: $ar_out"
+    fi
+else
+    skip "pwsh not installed: archive resilience test"
+fi
+
 section "Trusted-tools and anti-rootkit"
 # Launcher wiring.
 expect "trusted-tools in help"  0 'trusted-tools'  bash "$KIT/platforms/linux/vestigium-linux.sh" --help

@@ -266,32 +266,62 @@ function Join-DFIRArguments {
     return (@($quoted) -join ' ')
 }
 
+function Get-DFIRExtendedPath {
+<#
+.SYNOPSIS
+    Returns the \\?\ extended-length form of a fully-qualified path so .NET file
+    APIs can read it past the 260-character MAX_PATH limit.
+.DESCRIPTION
+    Only rewrites rooted local (C:\...) and UNC (\\server\...) paths, which are
+    the only forms the \\?\ prefix accepts; anything else (relative, already
+    prefixed, empty) is returned unchanged so callers can pass it blind.
+.OUTPUTS
+    System.String
+#>
+    [CmdletBinding()]
+    param([string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) { return $Path }
+    if ($Path.StartsWith('\\?\'))       { return $Path }
+    if ($Path -match '^[A-Za-z]:\\')    { return '\\?\' + $Path }
+    if ($Path.StartsWith('\\'))         { return '\\?\UNC\' + $Path.Substring(2) }
+    return $Path
+}
+
 function Get-DFIRFileSha256 {
 <#
 .SYNOPSIS
     Hashes a file through a shared-read stream so write-locked files can be hashed.
+.DESCRIPTION
+    Opens the raw path first; on failure retries through the \\?\ extended-length
+    form so files whose full path exceeds 260 characters still hash.
 .OUTPUTS
     System.String (upper-case hex, same format as Get-FileHash), or $null on failure.
 #>
     [CmdletBinding()]
     param([Parameter(Mandatory=$true)][string]$Path)
 
-    $stream = $null
-    $sha = $null
-    try {
-        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
-        $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        $bytes = $sha.ComputeHash($stream)
-        return ([System.BitConverter]::ToString($bytes) -replace '-', '')
+    $candidates = @($Path)
+    $extended = Get-DFIRExtendedPath $Path
+    if ($extended -ne $Path) { $candidates += $extended }
+
+    $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+    foreach ($candidate in $candidates) {
+        $stream = $null
+        $sha = $null
+        try {
+            $stream = New-Object System.IO.FileStream($candidate, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            $bytes = $sha.ComputeHash($stream)
+            return ([System.BitConverter]::ToString($bytes) -replace '-', '')
+        }
+        catch { }
+        finally {
+            if ($stream) { $stream.Dispose() }
+            if ($sha) { $sha.Dispose() }
+        }
     }
-    catch {
-        return $null
-    }
-    finally {
-        if ($stream) { $stream.Dispose() }
-        if ($sha) { $sha.Dispose() }
-    }
+    return $null
 }
 
 function Get-DFIRFileSnapshot {
@@ -1114,13 +1144,27 @@ function Copy-DFIRLockedFile {
     try {
         $srcDir = Split-Path -Parent $Source
         $srcName = Split-Path -Leaf $Source
-        $dstDir = Split-Path -Parent $Destination
-        $staging = Join-Path $dstDir ('.vestigium_robocopy_{0}' -f ([guid]::NewGuid().ToString('N')))
+        # Stage under a SHORT root (the output base, a sibling of the evidence
+        # tree) rather than beside the deep destination. A destination path for a
+        # file such as a Recent-folder shortcut whose name is a full URL can run
+        # past 260 characters; adding a staging folder there pushes it over the
+        # limit, so robocopy's landing file becomes invisible to Test-Path and the
+        # orphaned staging folder cannot be cleaned up -- it then leaks into the
+        # evidence tree and later breaks hashing and the archive. A short staging
+        # root keeps the landing path addressable; the final move to the real
+        # (possibly long) destination goes through the \\?\ extended form.
+        $stageRoot = $Context.OutputBase
+        if ([string]::IsNullOrWhiteSpace($stageRoot) -or -not (Test-Path -LiteralPath $stageRoot)) {
+            $stageRoot = [System.IO.Path]::GetTempPath()
+        }
+        $staging = Join-Path $stageRoot ('.vrc_{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 8)))
         New-Item -ItemType Directory -Path $staging -Force -ErrorAction Stop | Out-Null
         & robocopy.exe $srcDir $staging $srcName /b /r:0 /w:0 /nfl /ndl /njh /njs /nc /ns /np 2>&1 | Out-Null
         $landed = Join-Path $staging $srcName
         if (Test-Path -LiteralPath $landed -PathType Leaf) {
-            Move-Item -LiteralPath $landed -Destination $Destination -Force -ErrorAction Stop
+            # [System.IO.File]::Move accepts the \\?\ extended destination, so a
+            # long-named file lands where Move-Item -LiteralPath would fail.
+            [System.IO.File]::Move($landed, (Get-DFIRExtendedPath $Destination))
             Write-DFIRLog -Context $Context -Message ("Locked-file copy via robocopy backup mode: {0}" -f $Source)
             Add-DFIRCollectedFile -Context $Context -Path $Destination
             Add-DFIRProvenance -Context $Context -Source $Source -Destination $Destination -Snapshot $snapshot -CopyMethod 'RobocopyBackup'
@@ -1821,18 +1865,18 @@ function New-DFIRHashes {
             Where-Object { $excluded -notcontains $_.FullName }
 
         $hashes = foreach ($file in $files) {
-            try {
-                $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop
+            $sha = Get-DFIRFileSha256 -Path $file.FullName
+            if ($sha) {
                 [pscustomobject]@{
                     RelativePath = $file.FullName.Substring($Context.OutputRoot.Length).TrimStart('\')
                     FullPath     = $file.FullName
-                    SHA256       = $hash.Hash
+                    SHA256       = $sha
                     Length       = $file.Length
                     LastWriteUtc = $file.LastWriteTimeUtc.ToString('o')
                 }
             }
-            catch {
-                Write-DFIRLog -Context $Context -Level WARN -Message ("Hash failed for {0}: {1}" -f $file.FullName, $_.Exception.Message)
+            else {
+                Write-DFIRLog -Context $Context -Level WARN -Message ("Hash failed for {0}" -f $file.FullName)
             }
         }
 
@@ -1959,24 +2003,48 @@ function New-DFIRZipArchive {
     param(
         [Parameter(Mandatory=$true)][string]$SourceRoot,
         [Parameter(Mandatory=$true)][string]$ZipPath,
-        [string[]]$ExcludePath = @()
+        [string[]]$ExcludePath = @(),
+        [hashtable]$Context = $null
     )
 
     Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
     Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
     $rootName = Split-Path -Leaf $SourceRoot
     $prefixLength = $SourceRoot.TrimEnd('\').Length + 1
+    $skipped = New-Object System.Collections.Generic.List[string]
     $zip = [System.IO.Compression.ZipFile]::Open($ZipPath, [System.IO.Compression.ZipArchiveMode]::Create)
     try {
         foreach ($file in (Get-ChildItem -LiteralPath $SourceRoot -File -Recurse -Force -ErrorAction Stop)) {
             if ($ExcludePath -contains $file.FullName) { continue }
             $entryName = $rootName + '/' + ($file.FullName.Substring($prefixLength) -replace '\\', '/')
-            [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+
+            # Try the raw path, then the \\?\ extended-length form for files whose
+            # full path exceeds 260 characters. A single unreadable file must never
+            # abort the whole archive, so each entry is isolated in its own try.
+            $added = $false
+            $sources = @($file.FullName)
+            $ext = Get-DFIRExtendedPath $file.FullName
+            if ($ext -ne $file.FullName) { $sources += $ext }
+            foreach ($src in $sources) {
+                try {
+                    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $src, $entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+                    $added = $true
+                    break
+                }
+                catch { }
+            }
+            if (-not $added) {
+                $skipped.Add($file.FullName)
+                if ($Context) {
+                    Write-DFIRLog -Context $Context -Level WARN -Message ("Archive skipped (unreadable or over-length path): {0}" -f $file.FullName)
+                }
+            }
         }
     }
     finally {
         $zip.Dispose()
     }
+    return $skipped.Count
 }
 
 function Compress-DFIROutput {
@@ -2006,7 +2074,10 @@ function Compress-DFIROutput {
         try {
             $exclude = @()
             if ($memoryImage) { $exclude = @($memoryImage) }
-            New-DFIRZipArchive -SourceRoot $Context.OutputRoot -ZipPath $zipPath -ExcludePath $exclude
+            $skippedCount = New-DFIRZipArchive -SourceRoot $Context.OutputRoot -ZipPath $zipPath -ExcludePath $exclude -Context $Context
+            if ($skippedCount -gt 0) {
+                Write-DFIRLog -Context $Context -Level WARN -Message ("Archive completed with {0} file(s) skipped (unreadable or over-length path); see warnings above" -f $skippedCount)
+            }
         }
         catch {
             Write-DFIRLog -Context $Context -Level WARN -Message ("System.IO.Compression archive failed, falling back to Compress-Archive: {0}" -f $_.Exception.Message)

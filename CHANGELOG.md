@@ -164,6 +164,22 @@ Automation and docs:
   - The AV-detection finding no longer treats Defender's `MPLog` folder as a
     vendor (it was adding ~200 noisy keyword hits).
 
+- Long paths (> 260 characters) no longer abort the evidence archive. A
+  Recent-folder shortcut whose name is a whole URL produced a full path past
+  the Windows `MAX_PATH` limit, and `ZipFile.CreateEntryFromFile` threw on the
+  first such file, failing the entire ZIP (and `Compress-Archive` fell over
+  too), so a completed collection shipped no package. Now:
+  - the ZIP builder tries each file through the `\\?\` extended-length form and
+    isolates every entry in its own try/catch, so one unreadable or over-length
+    file is skipped (and counted in a warning) instead of losing the archive;
+  - the SHA256 inventory hashes over the same `\\?\` form, so long-path files
+    appear in `SHA256.csv` instead of logging "Hash failed";
+  - the locked-file copier stages robocopy under a short path (a sibling of the
+    evidence tree, not beside the deep destination) and lands the file with an
+    extended-length move, so long-named locked files are actually collected and
+    the `.vestigium_robocopy_*` staging folders can no longer leak into the
+    tree (which is what created the unreadable long paths in the first place).
+
 - The Windows collector now strips Mark-of-the-Web from its modules before
   dot-sourcing them, and `setup` unblocks the binaries it downloads. This stops
   the per-module PowerShell "Run only scripts that you trust" prompt that a

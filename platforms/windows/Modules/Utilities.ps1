@@ -288,6 +288,41 @@ function Get-DFIRExtendedPath {
     return $Path
 }
 
+function Get-DFIRNtfsGapText {
+<#
+.SYNOPSIS
+    One accurate sentence on which NTFS metadata artifacts were acquired.
+.DESCRIPTION
+    Names $MFT, the raw $UsnJrnl:$J and the fsutil USN CSV separately. A single
+    "acquired" flag once reported $MFT as present when only the fsutil CSV
+    existed, which sends an analyst looking for a file that is not there.
+.OUTPUTS
+    System.String
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    $mft = $Context.ContainsKey('MftAcquired') -and $Context['MftAcquired']
+    $usnRaw = $Context.ContainsKey('UsnRawAcquired') -and $Context['UsnRawAcquired']
+    $usnCsv = $Context.ContainsKey('UsnCsvAcquired') -and $Context['UsnCsvAcquired']
+    $have = New-Object System.Collections.ArrayList
+    $miss = New-Object System.Collections.ArrayList
+    if ($mft) { [void]$have.Add('$MFT') } else { [void]$miss.Add('$MFT') }
+    if ($usnRaw) { [void]$have.Add('raw $UsnJrnl:$J') }
+    elseif ($usnCsv) { [void]$have.Add('USN journal as fsutil CSV only (no raw $J)') }
+    else { [void]$miss.Add('$UsnJrnl') }
+
+    if ($have.Count -eq 0) {
+        return '$MFT and $UsnJrnl were NOT acquired (VSS unavailable, non-elevated, or the Forensics step was not run); deleted-file history is not reconstructable from this collection.'
+    }
+    $text = 'Acquired for offline parsing in 21_FileSystem (not parsed inline; run MFTECmd): ' + (@($have) -join ', ') + '.'
+    if ($miss.Count -gt 0) {
+        $text += ' NOT acquired: ' + (@($miss) -join ', ') + '.'
+        if (-not $mft) { $text += ' Without $MFT there is no full file-system timeline and no deleted-file record recovery.' }
+    }
+    return $text
+}
+
 function Get-DFIRFileSha256 {
 <#
 .SYNOPSIS

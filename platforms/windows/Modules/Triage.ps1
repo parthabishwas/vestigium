@@ -303,13 +303,7 @@ function Add-DFIRTriageCollectionGaps {
     if (-not $memoryCaptured) {
         [void]$gaps.Add('No memory image was captured; memory-resident implants cannot be excluded.')
     }
-    $ntfsOk = ($Context.ContainsKey('NtfsAcquired') -and $Context['NtfsAcquired'])
-    if ($ntfsOk) {
-        [void]$gaps.Add('$MFT / $UsnJrnl were acquired for offline parsing (21_FileSystem) but are not parsed inline; run MFTECmd for a deleted-file timeline.')
-    }
-    else {
-        [void]$gaps.Add('$MFT / $UsnJrnl were NOT acquired (VSS unavailable or non-elevated); deleted-file history is not reconstructable from this collection.')
-    }
+    [void]$gaps.Add((Get-DFIRNtfsGapText -Context $Context))
     if ((Get-DFIRCredentialStorePolicy -Context $Context) -eq 'MetadataOnly') {
         [void]$gaps.Add('Browser credential stores were recorded as metadata only (09_Browser\CredentialStoreMetadata.csv); their contents were not collected.')
     }

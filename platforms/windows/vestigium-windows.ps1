@@ -89,6 +89,14 @@ $script:VestigiumBoundParameters = @{}
 foreach ($key in $PSBoundParameters.Keys) { $script:VestigiumBoundParameters[$key] = $PSBoundParameters[$key] }
 
 # Order matters: Memory runs first (order of volatility), Triage last.
+# Pin the error preference this code is written for, instead of inheriting the
+# caller's. Under an inherited 'Stop' (GitHub Actions sets it; some operators'
+# profiles do too) every native command whose stderr is redirected with 2>&1
+# throws: reg.exe on an absent key became an ERROR, and a failed `reg load` of
+# a logged-on user's in-use NTUSER.DAT skipped the HKU\<SID> fallback, losing
+# that user's Run/RunOnce keys. Cmdlets that must throw pass -ErrorAction Stop.
+$ErrorActionPreference = 'Continue'
+
 $script:VestigiumStepNames = @('Memory','System','Processes','Registry','Startup','Autoruns','Services','Network','Browser','EventLogs','Defender','Execution','Devices','Forensics','YARA','Triage')
 
 function Get-DFIRKitRoot {

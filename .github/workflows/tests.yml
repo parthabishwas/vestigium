@@ -86,10 +86,19 @@ jobs:
             if ($head -ne $want) { Write-Host "::error::$name does not start with $want (got '$head')"; $bad++ }
             else { Write-Host ("{0}: {1:n0} bytes, signature {2}" -f $name, (Get-Item -LiteralPath $p).Length, $head) }
           }
+          $usn = Join-Path $root.FullName '21_FileSystem\UsnJrnl_J'
+          if (-not (Test-Path -LiteralPath $usn) -or (Get-Item -LiteralPath $usn).Length -le 0) { Write-Host '::error::raw $UsnJrnl:$J not acquired'; $bad++ }
           foreach ($f in @('findings.json', '15_Hashes\SHA256.csv', '16_Manifest\Manifest.json')) {
             if (-not (Test-Path -LiteralPath (Join-Path $root.FullName $f))) { Write-Host "::error::$f missing"; $bad++ }
           }
           if (Select-String -LiteralPath $log -Pattern '\[ERROR\] Compression failed' -Quiet) { Write-Host '::error::archive failed'; $bad++ }
+          # A clean runner should log no ERROR at all; any one is a regression
+          # (e.g. reg.exe on an absent key under an inherited 'Stop' preference).
+          $errs = @(Select-String -LiteralPath $log -Pattern '\[ERROR\]')
+          if ($errs.Count -gt 0) { Write-Host ("::error::{0} ERROR line(s) in Collection.log" -f $errs.Count); $bad++ }
+          foreach ($want in @('Step completed: Registry', 'Step completed: Defender', 'Step completed: Devices')) {
+            if (-not (Select-String -LiteralPath $log -Pattern ('\[SUCCESS\] ' + $want) -Quiet)) { Write-Host "::error::$want did not succeed"; $bad++ }
+          }
           exit $bad
       - name: Upload the collection log
         if: always()

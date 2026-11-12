@@ -299,6 +299,7 @@ function Invoke-DFIRVssAcquire {
         [void]$lines.Add('Shadow copy: NOT AVAILABLE for hives (VSS creation failed - see the collection log).')
         [void]$lines.Add(('metadata: $MFT={0} $LogFile={1} raw-$UsnJrnl={2} fsutil-USN={3}' -f $mftOk, $logOk, $usnOk, $usnFsutilOk))
         if ($mftOk -or $usnOk -or $usnFsutilOk) { $Context['NtfsAcquired'] = $true }
+        $Context['MftAcquired'] = [bool]$mftOk; $Context['UsnRawAcquired'] = [bool]$usnOk; $Context['UsnCsvAcquired'] = [bool]$usnFsutilOk
         Write-DFIRAcquisitionNote -Context $Context -Dest $dest -Lines $lines
         return $true   # not fatal
     }
@@ -395,6 +396,8 @@ function Invoke-DFIRVssAcquire {
         # NtfsAcquired gates the "$MFT/$UsnJrnl acquired" gap wording, so key it
         # on the metadata (MFT or any USN capture), not the hives.
         $Context['NtfsAcquired'] = ($mftOk -or $usnOk -or $usnFsutilOk)
+        # Per-artifact flags: the report must say exactly which of these exist.
+        $Context['MftAcquired'] = [bool]$mftOk; $Context['UsnRawAcquired'] = [bool]$usnOk; $Context['UsnCsvAcquired'] = [bool]$usnFsutilOk
     }
     catch {
         Write-DFIRLog -Context $Context -Level ERROR -Message ("VSS acquisition error: {0}" -f $_.Exception.Message)

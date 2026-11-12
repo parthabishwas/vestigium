@@ -198,6 +198,26 @@ Automation and docs:
     `Office` for a user without it) is logged as INFO "not present" instead of a
     WARN, so the log and the findings gap count show real failures only.
 
+- Final Windows review (validated on a real Windows Server CI runner):
+  - The raw `$UsnJrnl:$J` is now acquired too: the NTFS reader resolves
+    `\$Extend\$UsnJrnl` through the directory index and extracts the `$J`
+    stream with its sparse prefix trimmed (CI runner: 36 MB kept, 3.5 GB of
+    sparse zeros skipped; the skipped count is in the acquisition note). On the
+    same runner `$MFT` came out at 1.4 GB across 7 fragments.
+  - The collector pins `$ErrorActionPreference = 'Continue'` instead of
+    inheriting the caller's. Under an inherited `Stop`, reg.exe on an absent
+    key was logged as an ERROR (Registry, Defender and Devices reported
+    failure), and a failed `reg load` of a logged-on user's in-use hive skipped
+    the `HKU\<SID>` fallback, losing that user's Run/RunOnce keys.
+  - The findings report named `$MFT` as acquired whenever any NTFS artifact
+    was (on the reported host only the fsutil USN CSV existed). It now lists
+    `$MFT`, raw `$J` and the fsutil CSV separately and says what is missing.
+  - The end-of-run shadow-copy retry also recovered the SRUM database
+    (`SRUDB.dat`), previously lost as locked.
+  - CI now fails on any `[ERROR]` line, on a failed Registry/Defender/Devices
+    step, or on missing `$MFT`/`$LogFile`/`$J`/findings/hashes/manifest, and
+    uploads `Collection.log`.
+
 - The Windows collector now strips Mark-of-the-Web from its modules before
   dot-sourcing them, and `setup` unblocks the binaries it downloads. This stops
   the per-module PowerShell "Run only scripts that you trust" prompt that a

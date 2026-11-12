@@ -47,7 +47,7 @@ internet at all) place them in `platforms\windows\Tools\` by hand instead:
 | `yara64.exe` | YARA scanning | VirusTotal/YARA releases |
 | `Autorunsc64.exe` | Autoruns persistence | Microsoft Sysinternals |
 | `winpmem_mini_x64*.exe` | RAM capture (`-CaptureMemory`) | Velocidex WinPmem releases |
-| `RawCopy64.exe` | `$MFT`/`$LogFile`/`$UsnJrnl` extraction | jschicht/RawCopy |
+| `RawCopy64.exe` | Optional. `$MFT`/`$LogFile`/`$UsnJrnl` extraction; `$MFT`/`$LogFile` are collected without it by the built-in NTFS parser | jschicht/RawCopy |
 
 Every step that uses one of these **degrades gracefully**: if the binary is
 absent the step is skipped with a logged warning and the collection continues.

@@ -15,7 +15,7 @@ collection: the locked NTFS metadata and the locked registry hives.
 
 | Artifact | How | Output | Offline parse |
 |---|---|---|---|
-| `$MFT`, `$LogFile` | RawCopy64 (raw NTFS parse), else esentutl /vss, else snapshot handle | `21_FileSystem/MFT`, `LogFile` | MFTECmd |
+| `$MFT`, `$LogFile` | RawCopy64 if staged, else esentutl /vss, else the **built-in raw NTFS parser** on a shadow copy (live volume if VSS is unavailable). Raw on-disk bytes, fixups intact | `21_FileSystem/MFT`, `LogFile` | MFTECmd |
 | USN journal (`$UsnJrnl:$J`) | RawCopy64 / esentutl if available, plus an independent `fsutil usn readjournal` | `21_FileSystem/UsnJrnl_J` or `UsnJrnl_readjournal.csv` | MFTECmd / fsutil |
 | `NTUSER.DAT`, `UsrClass.dat` (+ `.LOG1/.LOG2`) | copied from the shadow copy (no `reg load`) | `05_Registry/Hives_VSS/<user>/` | Registry Explorer / RECmd -> ShellBags, UserAssist, RecentDocs |
 | `SAM`, `SECURITY`, `SYSTEM`, `SOFTWARE` (+ logs) | copied from the shadow copy | `05_Registry/Hives_VSS/_MACHINE/` | secretsdump.py / samdump2 -> local hashes, LSA secrets, cached domain creds |
@@ -36,7 +36,7 @@ collection: the locked NTFS metadata and the locked registry hives.
 
 Non-system volumes are only inventoried and shallow-listed by default. Pass
 `-ScanDrives D:,E:` to also YARA-scan them and acquire their `$MFT`, `$LogFile`
-and USN journal (via `esentutl /vss`) into `21_FileSystem/<letter>/`.
+and USN journal (via `esentutl /vss`, with the built-in raw NTFS parser as the `$MFT`/`$LogFile` fallback) into `21_FileSystem/<letter>/`.
 
 The shadow copy Vestigium creates is deleted at the end of the step (in a
 `finally`). Pre-existing shadow copies are never touched. `21_FileSystem/_ACQUISITION.txt`

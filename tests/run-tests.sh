@@ -494,6 +494,58 @@ else
     skip "pwsh not installed: archive resilience test"
 fi
 
+# Built-in NTFS reader ($MFT / $LogFile without RawCopy). Checked against
+# ntfscat on a real mkntfs image: $LogFile byte-identical; $MFT identical once
+# update-sequence fixups are applied (the reader keeps raw on-disk bytes, as
+# RawCopy/KAPE do, so MFTECmd can validate the fixups itself).
+if have pwsh && have mkntfs && have ntfscat && have python3; then
+    nimg="$WORK/ntfs.raw"; truncate -s 32M "$nimg"
+    if mkntfs -F -Q -q -c 4096 "$nimg" >/dev/null 2>&1 \
+       && ntfscat -i 0 "$nimg" >"$WORK/t_mft" 2>/dev/null && ntfscat -i 2 "$nimg" >"$WORK/t_log" 2>/dev/null; then
+        cat >"$WORK/ntfstest.ps1" <<'PS1'
+param([string]$Kit, [string]$W)
+. (Join-Path $Kit 'platforms/windows/Modules/Utilities.ps1')
+function Write-DFIRLog { param($Context, $Level, $Message) }
+if (-not (Add-DFIRNtfsReaderType -Context @{})) { 'compile-failed'; exit }
+foreach ($p in @(@(0, 'g_mft'), @(2, 'g_log'))) {
+    $r = [Vestigium.NtfsReader]::Extract((Join-Path $W 'ntfs.raw'), $p[0], '', (Join-Path $W $p[1]), 0)
+    if ($r.Error) { 'error: ' + $r.Error; exit }
+}
+$r = [Vestigium.NtfsReader]::Extract((Join-Path $W 't_log'), 0, '', (Join-Path $W 'g_x'), 0)
+if ($r.Error -ne 'volume is not NTFS') { 'non-NTFS not rejected'; exit }
+'ok'
+PS1
+        nres="$(pwsh -NoProfile -File "$WORK/ntfstest.ps1" "$KIT" "$WORK" 2>&1 | tail -n 1)"
+        if [[ "$nres" == ok ]]; then
+            ncmp="$(python3 - "$WORK" <<'PY'
+import struct, sys, os
+w = sys.argv[1]
+t = open(os.path.join(w, 't_mft'), 'rb').read(); g = bytearray(open(os.path.join(w, 'g_mft'), 'rb').read())
+for base in range(0, len(g), 1024):
+    r = g[base:base+1024]
+    if r[:4] != b'FILE': continue
+    uo, uc = struct.unpack_from('<HH', r, 4)
+    for i in range(1, uc):
+        p = i*512-2
+        if r[p:p+2] != r[uo:uo+2]: print('usn-mismatch'); sys.exit()
+        r[p:p+2] = r[uo+2*i:uo+2*i+2]
+    g[base:base+1024] = r
+ok = bytes(g) == t and open(os.path.join(w, 'g_log'), 'rb').read() == open(os.path.join(w, 't_log'), 'rb').read()
+print('ok' if ok else 'content-mismatch')
+PY
+)"
+            if [[ "$ncmp" == ok ]]; then pass "NTFS reader: \$MFT and \$LogFile match ntfscat"
+            else fail "NTFS reader output differs from ntfscat: $ncmp"; fi
+        else
+            fail "NTFS reader: $nres"
+        fi
+    else
+        skip "mkntfs/ntfscat could not build a test image"
+    fi
+else
+    skip "pwsh/mkntfs/ntfscat not installed: NTFS reader test"
+fi
+
 section "Trusted-tools and anti-rootkit"
 # Launcher wiring.
 expect "trusted-tools in help"  0 'trusted-tools'  bash "$KIT/platforms/linux/vestigium-linux.sh" --help

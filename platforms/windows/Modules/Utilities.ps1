@@ -435,7 +435,7 @@ function Add-DFIRProvenance {
         [Parameter(Mandatory=$true)][string]$Source,
         [Parameter(Mandatory=$true)][string]$Destination,
         [AllowNull()][object]$Snapshot,
-        [Parameter(Mandatory=$true)][ValidateSet('CopyItem','SharedRead','RobocopyBackup','RawBackup')][string]$CopyMethod
+        [Parameter(Mandatory=$true)][ValidateSet('CopyItem','SharedRead','RobocopyBackup','RawBackup','NtfsRawParse','VssRetry')][string]$CopyMethod
     )
 
     if (-not ($Context.ContainsKey('ProvenanceLog') -and $Context.ProvenanceLog)) { return }
@@ -1113,8 +1113,10 @@ function Copy-DFIRLockedFile {
     $outStream = $null
     $streamCopied = $false
     try {
-        $inStream = New-Object System.IO.FileStream($Source, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        $outStream = New-Object System.IO.FileStream($Destination, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        # \\?\ forms so a source or destination past 260 characters (a shortcut
+        # named after a whole URL) still copies here rather than failing over.
+        $inStream = New-Object System.IO.FileStream((Get-DFIRExtendedPath $Source), [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $outStream = New-Object System.IO.FileStream((Get-DFIRExtendedPath $Destination), [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         $inStream.CopyTo($outStream)
         $outStream.Flush()
         $streamCopied = $true
@@ -1127,8 +1129,8 @@ function Copy-DFIRLockedFile {
     if ($streamCopied) {
         if ($snapshot) {
             try {
-                [System.IO.File]::SetCreationTimeUtc($Destination, $snapshot.CreationTimeUtc)
-                [System.IO.File]::SetLastWriteTimeUtc($Destination, $snapshot.LastWriteTimeUtc)
+                [System.IO.File]::SetCreationTimeUtc((Get-DFIRExtendedPath $Destination), $snapshot.CreationTimeUtc)
+                [System.IO.File]::SetLastWriteTimeUtc((Get-DFIRExtendedPath $Destination), $snapshot.LastWriteTimeUtc)
             }
             catch {
                 Write-DFIRLog -Context $Context -Level WARN -Message ("Could not restore timestamps on {0}: {1}" -f $Destination, $_.Exception.Message)
@@ -1178,8 +1180,79 @@ function Copy-DFIRLockedFile {
         }
     }
 
-    Write-DFIRLog -Context $Context -Level WARN -Message ("Locked-file copy failed after all fallbacks: {0}" -f $Source)
+    # Remember live system-drive failures (typically a running browser's
+    # exclusively-locked Cookies/History) so Invoke-DFIRLockedFileVssRetry can
+    # take them from a shadow copy at the end of the run, where nothing is locked.
+    $retryable = (-not $Source.StartsWith('\\?\')) -and $Source.ToUpper().StartsWith(($env:SystemDrive + '\').ToUpper())
+    if ($retryable) {
+        if (-not $Context.ContainsKey('LockedCopyFailures') -or $null -eq $Context['LockedCopyFailures']) {
+            $Context['LockedCopyFailures'] = New-Object System.Collections.ArrayList
+        }
+        [void]$Context['LockedCopyFailures'].Add([pscustomobject]@{ Source = $Source; Destination = $Destination; Snapshot = $snapshot })
+        Write-DFIRLog -Context $Context -Level WARN -Message ("Locked-file copy failed after all live fallbacks (queued for shadow-copy retry): {0}" -f $Source)
+    }
+    else {
+        Write-DFIRLog -Context $Context -Level WARN -Message ("Locked-file copy failed after all fallbacks: {0}" -f $Source)
+    }
     return $false
+}
+
+function Invoke-DFIRLockedFileVssRetry {
+<#
+.SYNOPSIS
+    Retries every queued locked-file failure from one short-lived shadow copy.
+.DESCRIPTION
+    Some files (a running browser's Cookies database, shell-held Recent
+    shortcuts) are opened with no read sharing, so shared-read and robocopy
+    backup mode both fail on the live volume. On a Volume Shadow Copy they are
+    plain, unlocked files. This runs once after all collection steps, creates a
+    shadow only when something is queued, copies each item through the \\?\
+    extended form (long names included), and always deletes the shadow.
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    if (-not $Context.ContainsKey('LockedCopyFailures')) { return $true }
+    $queue = @($Context['LockedCopyFailures'])
+    if ($queue.Count -eq 0) { return $true }
+    if (-not (Get-Command -Name New-DFIRShadowCopy -ErrorAction SilentlyContinue)) { return $true }
+
+    Write-DFIRLog -Context $Context -Message ("Retrying {0} locked file(s) from a shadow copy" -f $queue.Count)
+    $shadow = New-DFIRShadowCopy -Context $Context
+    if (-not $shadow) {
+        Write-DFIRLog -Context $Context -Level WARN -Message 'Shadow-copy retry skipped: no shadow copy available'
+        return $true
+    }
+    $recovered = 0
+    try {
+        $device = $shadow.DeviceObject
+        $driveLen = $env:SystemDrive.Length
+        foreach ($item in $queue) {
+            $shadowSource = $device + $item.Source.Substring($driveLen)
+            try {
+                $parent = Split-Path -Parent $item.Destination
+                if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+                    New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null
+                }
+                [System.IO.File]::Copy($shadowSource, (Get-DFIRExtendedPath $item.Destination), $true)
+                Add-DFIRCollectedFile -Context $Context -Path $item.Destination
+                Add-DFIRProvenance -Context $Context -Source $item.Source -Destination $item.Destination -Snapshot $item.Snapshot -CopyMethod 'VssRetry'
+                Write-DFIRLog -Context $Context -Message ("Recovered from shadow copy: {0}" -f $item.Source)
+                $recovered++
+            }
+            catch {
+                Write-DFIRLog -Context $Context -Level WARN -Message ("Shadow-copy retry failed for {0}: {1}" -f $item.Source, $_.Exception.Message)
+            }
+        }
+    }
+    finally {
+        Remove-DFIRShadowCopy -Context $Context -Shadow $shadow
+    }
+    Write-DFIRLog -Context $Context -Message ("Shadow-copy retry recovered {0} of {1} locked file(s)" -f $recovered, $queue.Count)
+    $Context['LockedCopyFailures'] = New-Object System.Collections.ArrayList
+    return $true
 }
 
 function Add-DFIRNativeFileType {
@@ -1220,6 +1293,427 @@ namespace Vestigium {
         Write-DFIRLog -Context $Context -Level ERROR -Message ("Native file type unavailable: {0}" -f $_.Exception.Message)
         return $false
     }
+}
+
+function Add-DFIRNtfsReaderType {
+<#
+.SYNOPSIS
+    Registers Vestigium.NtfsReader, a minimal read-only NTFS parser used to
+    extract $MFT / $LogFile straight from a volume or shadow-copy device.
+.DESCRIPTION
+    NTFS refuses to open $MFT and $LogFile by name, even with backup semantics
+    and even on a snapshot, and esentutl /vss cannot copy them on current
+    Windows builds. Reading the volume device itself is allowed for an elevated
+    administrator, so this parser reads the boot sector, locates the MFT,
+    applies update-sequence fixups to the wanted file record, follows its
+    $ATTRIBUTE_LIST when the data is split across extension records, decodes
+    the $DATA run list and streams the clusters out. All volume reads are
+    4096-byte aligned so 512e and 4Kn disks both work. C# 5 syntax only, so it
+    compiles under Windows PowerShell 5.1.
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param([Parameter(Mandatory=$true)][hashtable]$Context)
+
+    if ('Vestigium.NtfsReader' -as [type]) { return $true }
+    $source = @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace Vestigium {
+    public class NtfsExtractResult {
+        public long Size;
+        public long Written;
+        public bool Truncated;
+        public bool Gaps;
+        public int Runs;
+        public string Error;
+    }
+
+    public static class NtfsReader {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool ReadFile(SafeFileHandle h, byte[] buffer, uint toRead, out uint read, IntPtr overlapped);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetFilePointerEx(SafeFileHandle h, long distance, out long newPos, uint method);
+
+        const int Align = 4096;
+
+        class Run { public long Vcn; public long Lcn; public long Length; public bool Sparse; }
+
+        class Volume {
+            public SafeFileHandle Handle;
+            public FileStream Image;
+            public long ClusterSize;
+            public long MftOffset;
+            public int RecordSize;
+            public List<Run> MftRuns;
+        }
+
+        static byte[] ReadAligned(Volume v, long offset, int length) {
+            long start = offset - (offset % Align);
+            long end = offset + length;
+            if (end % Align != 0) { end += Align - (end % Align); }
+            int span = (int)(end - start);
+            byte[] buf = new byte[span];
+            long got;
+            if (v.Image != null) {
+                // Image file (offline analysis / tests): ordinary buffered reads.
+                v.Image.Seek(start, SeekOrigin.Begin);
+                int total = 0;
+                while (total < span) {
+                    int n = v.Image.Read(buf, total, span - total);
+                    if (n <= 0) { break; }
+                    total += n;
+                }
+                got = total;
+            } else {
+                long np;
+                if (!SetFilePointerEx(v.Handle, start, out np, 0)) {
+                    throw new IOException("seek failed at " + start + " (win32 " + Marshal.GetLastWin32Error() + ")");
+                }
+                uint g;
+                if (!ReadFile(v.Handle, buf, (uint)span, out g, IntPtr.Zero)) {
+                    throw new IOException("read failed at " + start + " (win32 " + Marshal.GetLastWin32Error() + ")");
+                }
+                got = g;
+            }
+            if (got < (offset - start + length)) { throw new IOException("short read at " + start); }
+            byte[] outBuf = new byte[length];
+            Buffer.BlockCopy(buf, (int)(offset - start), outBuf, 0, length);
+            return outBuf;
+        }
+
+        static void ApplyFixups(byte[] rec, int recordSize) {
+            if (rec[0] != (byte)'F' || rec[1] != (byte)'I' || rec[2] != (byte)'L' || rec[3] != (byte)'E') {
+                throw new InvalidDataException("not a FILE record");
+            }
+            int usaOff = BitConverter.ToUInt16(rec, 4);
+            int usaCount = BitConverter.ToUInt16(rec, 6);
+            if (usaCount < 2 || usaOff + usaCount * 2 > recordSize) { throw new InvalidDataException("bad update sequence array"); }
+            for (int i = 1; i < usaCount; i++) {
+                int pos = i * 512 - 2;
+                if (pos + 2 > recordSize) { break; }
+                if (rec[pos] != rec[usaOff] || rec[pos + 1] != rec[usaOff + 1]) {
+                    throw new InvalidDataException("update sequence mismatch (torn record)");
+                }
+                rec[pos] = rec[usaOff + 2 * i];
+                rec[pos + 1] = rec[usaOff + 2 * i + 1];
+            }
+        }
+
+        static List<Run> DecodeRuns(byte[] rec, int start, int end, long startVcn) {
+            List<Run> runs = new List<Run>();
+            long vcn = startVcn;
+            long lcn = 0;
+            int p = start;
+            while (p < end && rec[p] != 0) {
+                int lenBytes = rec[p] & 0x0F;
+                int offBytes = (rec[p] >> 4) & 0x0F;
+                p++;
+                if (lenBytes == 0 || p + lenBytes + offBytes > end) { break; }
+                long length = 0;
+                for (int i = 0; i < lenBytes; i++) { length |= ((long)rec[p + i]) << (8 * i); }
+                p += lenBytes;
+                Run r = new Run();
+                r.Vcn = vcn;
+                r.Length = length;
+                if (offBytes == 0) {
+                    r.Sparse = true;
+                } else {
+                    long delta = 0;
+                    for (int i = 0; i < offBytes; i++) { delta |= ((long)rec[p + i]) << (8 * i); }
+                    if ((rec[p + offBytes - 1] & 0x80) != 0) {
+                        for (int i = offBytes; i < 8; i++) { delta |= ((long)0xFF) << (8 * i); }
+                    }
+                    lcn += delta;
+                    r.Lcn = lcn;
+                }
+                p += offBytes;
+                runs.Add(r);
+                vcn += length;
+            }
+            return runs;
+        }
+
+        static long MftRecordOffset(Volume v, long record) {
+            long byteInMft = record * v.RecordSize;
+            if (v.MftRuns == null) { return v.MftOffset + byteInMft; }
+            long vcn = byteInMft / v.ClusterSize;
+            long within = byteInMft % v.ClusterSize;
+            foreach (Run r in v.MftRuns) {
+                if (vcn >= r.Vcn && vcn < r.Vcn + r.Length && !r.Sparse) {
+                    return (r.Lcn + (vcn - r.Vcn)) * v.ClusterSize + within;
+                }
+            }
+            throw new InvalidDataException("MFT record " + record + " is outside the known MFT extents");
+        }
+
+        static byte[] ReadRecord(Volume v, long record) {
+            byte[] rec = ReadAligned(v, MftRecordOffset(v, record), v.RecordSize);
+            ApplyFixups(rec, v.RecordSize);
+            return rec;
+        }
+
+        static string AttrName(byte[] rec, int a) {
+            int nameLen = rec[a + 9];
+            if (nameLen == 0) { return ""; }
+            int nameOff = BitConverter.ToUInt16(rec, a + 10);
+            return Encoding.Unicode.GetString(rec, a + nameOff, nameLen * 2);
+        }
+
+        // Collects the $DATA runs named streamName from one record. Returns the
+        // real size when this record holds the first extent (VCN 0), else -1.
+        static long CollectData(byte[] rec, int recordSize, string streamName, List<Run> runs, out byte[] resident, out byte[] attrList, out bool attrListNonResident, out List<Run> attrListRuns, out long attrListSize) {
+            long size = -1;
+            resident = null;
+            attrList = null;
+            attrListNonResident = false;
+            attrListRuns = null;
+            attrListSize = 0;
+            int a = BitConverter.ToUInt16(rec, 0x14);
+            while (a + 16 <= recordSize) {
+                uint type = BitConverter.ToUInt32(rec, a);
+                if (type == 0xFFFFFFFF) { break; }
+                int alen = (int)BitConverter.ToUInt32(rec, a + 4);
+                if (alen <= 0 || a + alen > recordSize) { break; }
+                bool nonRes = rec[a + 8] != 0;
+                if (type == 0x20) {
+                    if (nonRes) {
+                        attrListNonResident = true;
+                        attrListSize = BitConverter.ToInt64(rec, a + 0x30);
+                        attrListRuns = DecodeRuns(rec, a + BitConverter.ToUInt16(rec, a + 0x20), a + alen, 0);
+                    } else {
+                        int vlen = (int)BitConverter.ToUInt32(rec, a + 0x10);
+                        int voff = BitConverter.ToUInt16(rec, a + 0x14);
+                        attrList = new byte[vlen];
+                        Buffer.BlockCopy(rec, a + voff, attrList, 0, vlen);
+                    }
+                } else if (type == 0x80 && AttrName(rec, a) == streamName) {
+                    if (nonRes) {
+                        long startVcn = BitConverter.ToInt64(rec, a + 0x10);
+                        if (startVcn == 0) { size = BitConverter.ToInt64(rec, a + 0x30); }
+                        runs.AddRange(DecodeRuns(rec, a + BitConverter.ToUInt16(rec, a + 0x20), a + alen, startVcn));
+                    } else {
+                        int vlen = (int)BitConverter.ToUInt32(rec, a + 0x10);
+                        int voff = BitConverter.ToUInt16(rec, a + 0x14);
+                        resident = new byte[vlen];
+                        Buffer.BlockCopy(rec, a + voff, resident, 0, vlen);
+                        size = vlen;
+                    }
+                }
+                a += alen;
+            }
+            return size;
+        }
+
+        static byte[] ReadRuns(Volume v, List<Run> runs, long size) {
+            byte[] data = new byte[size];
+            long written = 0;
+            foreach (Run r in runs) {
+                long bytes = Math.Min(r.Length * v.ClusterSize, size - written);
+                if (bytes <= 0) { break; }
+                if (!r.Sparse) {
+                    byte[] chunk = ReadAligned(v, r.Lcn * v.ClusterSize, (int)bytes);
+                    Buffer.BlockCopy(chunk, 0, data, (int)written, (int)bytes);
+                }
+                written += bytes;
+            }
+            return data;
+        }
+
+        static void Close(Volume v) {
+            if (v == null) { return; }
+            if (v.Handle != null) { v.Handle.Dispose(); }
+            if (v.Image != null) { v.Image.Dispose(); }
+        }
+
+        static Volume OpenVolume(string device) {
+            Volume v = new Volume();
+            if (device.StartsWith(@"\\")) {
+                SafeFileHandle h = CreateFileW(device, 0x80000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+                if (h.IsInvalid) {
+                    throw new IOException("cannot open volume " + device + " (win32 " + Marshal.GetLastWin32Error() + ")");
+                }
+                v.Handle = h;
+            } else {
+                v.Image = new FileStream(device, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            }
+            byte[] boot = ReadAligned(v, 0, 512);
+            if (Encoding.ASCII.GetString(boot, 3, 4) != "NTFS") {
+                Close(v);
+                throw new InvalidDataException("volume is not NTFS");
+            }
+            long bps = BitConverter.ToUInt16(boot, 0x0B);
+            int spcRaw = boot[0x0D];
+            long spc = spcRaw <= 0x80 ? spcRaw : (1L << (256 - spcRaw));
+            v.ClusterSize = bps * spc;
+            v.MftOffset = BitConverter.ToInt64(boot, 0x30) * v.ClusterSize;
+            int cpr = (sbyte)boot[0x40];
+            v.RecordSize = cpr > 0 ? (int)(cpr * v.ClusterSize) : (1 << (-cpr));
+            if (v.ClusterSize <= 0 || v.RecordSize < 512 || v.RecordSize > 65536) {
+                Close(v);
+                throw new InvalidDataException("implausible NTFS geometry");
+            }
+            // The MFT's own run list, from record 0, maps every other record.
+            List<Run> mftRuns = new List<Run>();
+            byte[] r0 = ReadRecord(v, 0);
+            byte[] res; byte[] al; bool alNr; List<Run> alRuns; long alSize;
+            CollectData(r0, v.RecordSize, "", mftRuns, out res, out al, out alNr, out alRuns, out alSize);
+            if (mftRuns.Count > 0) { v.MftRuns = mftRuns; }
+            return v;
+        }
+
+        // Extracts the unnamed (or named) $DATA stream of MFT record `record`
+        // from `device` (a volume device path, or an NTFS image file) into
+        // `destination`. Never throws; failures land in Error.
+        public static NtfsExtractResult Extract(string device, long record, string streamName, string destination, long maxBytes) {
+            NtfsExtractResult result = new NtfsExtractResult();
+            Volume v = null;
+            try {
+                v = OpenVolume(device);
+                byte[] rec = ReadRecord(v, record);
+                List<Run> runs = new List<Run>();
+                byte[] resident; byte[] attrList; bool alNonRes; List<Run> alRuns; long alSize;
+                long size = CollectData(rec, v.RecordSize, streamName, runs, out resident, out attrList, out alNonRes, out alRuns, out alSize);
+
+                if (alNonRes && alRuns != null && alSize > 0) { attrList = ReadRuns(v, alRuns, alSize); }
+                if (attrList != null) {
+                    // $DATA extents may live in extension records listed here.
+                    // Dictionary (mscorlib), not HashSet (System.Core): Windows
+                    // PowerShell 5.1 Add-Type does not reference System.Core.
+                    Dictionary<long, bool> seen = new Dictionary<long, bool>();
+                    seen[record] = true;
+                    int p = 0;
+                    while (p + 0x1A <= attrList.Length) {
+                        uint type = BitConverter.ToUInt32(attrList, p);
+                        int len = BitConverter.ToUInt16(attrList, p + 4);
+                        if (len <= 0) { break; }
+                        int nameLen = attrList[p + 6];
+                        int nameOff = attrList[p + 7];
+                        string name = nameLen == 0 ? "" : Encoding.Unicode.GetString(attrList, p + nameOff, nameLen * 2);
+                        long refNum = (long)(BitConverter.ToUInt64(attrList, p + 0x10) & 0x0000FFFFFFFFFFFFUL);
+                        if (type == 0x80 && name == streamName && !seen.ContainsKey(refNum)) {
+                            seen[refNum] = true;
+                            byte[] ext = ReadRecord(v, refNum);
+                            byte[] r2; byte[] a2; bool n2; List<Run> ar2; long s2;
+                            long extSize = CollectData(ext, v.RecordSize, streamName, runs, out r2, out a2, out n2, out ar2, out s2);
+                            if (extSize >= 0 && size < 0) { size = extSize; }
+                        }
+                        p += len;
+                    }
+                }
+
+                if (size < 0) { result.Error = "no $DATA stream found in record " + record; return result; }
+                result.Size = size;
+                runs.Sort(delegate (Run x, Run y) { return x.Vcn.CompareTo(y.Vcn); });
+                result.Runs = runs.Count;
+
+                using (FileStream outStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None)) {
+                    if (resident != null) {
+                        outStream.Write(resident, 0, resident.Length);
+                        result.Written = resident.Length;
+                        return result;
+                    }
+                    long limit = size;
+                    if (maxBytes > 0 && limit > maxBytes) { limit = maxBytes; result.Truncated = true; }
+                    long expectedVcn = 0;
+                    const int Chunk = 4 * 1024 * 1024;
+                    byte[] zeros = new byte[Chunk];
+                    foreach (Run r in runs) {
+                        if (result.Written >= limit) { break; }
+                        if (r.Vcn > expectedVcn) {
+                            // Missing extent: keep offsets right, flag it.
+                            long gap = Math.Min((r.Vcn - expectedVcn) * v.ClusterSize, limit - result.Written);
+                            while (gap > 0) { int n = (int)Math.Min(gap, Chunk); outStream.Write(zeros, 0, n); gap -= n; result.Written += n; }
+                            result.Gaps = true;
+                        }
+                        long remaining = Math.Min(r.Length * v.ClusterSize, limit - result.Written);
+                        long volOff = r.Lcn * v.ClusterSize;
+                        while (remaining > 0) {
+                            int n = (int)Math.Min(remaining, Chunk);
+                            if (r.Sparse) {
+                                outStream.Write(zeros, 0, n);
+                            } else {
+                                byte[] chunk = ReadAligned(v, volOff, n);
+                                outStream.Write(chunk, 0, n);
+                                volOff += n;
+                            }
+                            remaining -= n;
+                            result.Written += n;
+                        }
+                        expectedVcn = r.Vcn + r.Length;
+                    }
+                    if (result.Written < limit) { result.Gaps = true; }
+                }
+            }
+            catch (Exception ex) {
+                result.Error = ex.Message;
+            }
+            finally {
+                Close(v);
+            }
+            return result;
+        }
+    }
+}
+'@
+    try { Add-Type -TypeDefinition $source -ErrorAction Stop; return $true }
+    catch {
+        Write-DFIRLog -Context $Context -Level WARN -Message ("NTFS reader unavailable: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+function Copy-DFIRNtfsRecordData {
+<#
+.SYNOPSIS
+    Extracts an NTFS metadata file ($MFT = record 0, $LogFile = record 2) by
+    parsing the volume or shadow-copy device directly.
+.PARAMETER Volume
+    A volume device: \\.\C: for the live volume, or a shadow device such as
+    \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy2 (preferred: consistent).
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][hashtable]$Context,
+        [Parameter(Mandatory=$true)][string]$Volume,
+        [Parameter(Mandatory=$true)][long]$RecordNumber,
+        [Parameter(Mandatory=$true)][string]$Destination,
+        [string]$StreamName = '',
+        [long]$MaxBytes = 8589934592   # 8 GiB safety ceiling
+    )
+
+    if (-not (Add-DFIRNtfsReaderType -Context $Context)) { return $false }
+    $parent = Split-Path -Parent $Destination
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        try { New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null } catch { return $false }
+    }
+
+    $r = [Vestigium.NtfsReader]::Extract($Volume, $RecordNumber, $StreamName, $Destination, $MaxBytes)
+    if ($r.Error -or $r.Written -le 0) {
+        $why = $r.Error
+        if (-not $why) { $why = 'no data written' }
+        Write-DFIRLog -Context $Context -Level WARN -Message ("NTFS raw parse of record {0} on {1} failed: {2}" -f $RecordNumber, $Volume, $why)
+        if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue }
+        return $false
+    }
+    $note = ''
+    if ($r.Truncated) { $note += ' TRUNCATED at the size cap;' }
+    if ($r.Gaps) { $note += ' some extents unreadable (zero-filled);' }
+    $level = 'INFO'
+    if ($note) { $level = 'WARN' }
+    Write-DFIRLog -Context $Context -Level $level -Message ("NTFS raw parse: record {0} from {1} -> {2} ({3} of {4} bytes, {5} run(s)){6}" -f $RecordNumber, $Volume, $Destination, $r.Written, $r.Size, $r.Runs, $note)
+    Add-DFIRCollectedFile -Context $Context -Path $Destination
+    Add-DFIRProvenance -Context $Context -Source ('{0}\[MFT record {1}]' -f $Volume, $RecordNumber) -Destination $Destination -Snapshot $null -CopyMethod 'NtfsRawParse'
+    return $true
 }
 
 function Open-DFIRRawHandle {
@@ -1718,7 +2212,18 @@ function Export-DFIRRegistryKey {
             Add-DFIRCollectedFile -Context $Context -Path $RegExePath
         }
         else {
-            Write-DFIRLog -Context $Context -Level WARN -Message ("Registry export unavailable: {0}" -f $RegistryPath)
+            # Most misses are keys that simply do not exist on this host
+            # (Policies\Explorer\Run, RunServices, Office for a user without it).
+            # That is a finding of absence, not a collection failure.
+            $keyExists = $true
+            $fullKey = $RegistryPath -replace '^HKLM(?=\\|$)', 'HKEY_LOCAL_MACHINE' -replace '^HKCU(?=\\|$)', 'HKEY_CURRENT_USER' -replace '^HKU(?=\\|$)', 'HKEY_USERS' -replace '^HKCR(?=\\|$)', 'HKEY_CLASSES_ROOT'
+            try { $keyExists = Test-Path -LiteralPath ('Registry::' + $fullKey) -ErrorAction Stop } catch { $keyExists = $true }
+            if ($keyExists) {
+                Write-DFIRLog -Context $Context -Level WARN -Message ("Registry export unavailable: {0}" -f $RegistryPath)
+            }
+            else {
+                Write-DFIRLog -Context $Context -Message ("Registry key not present (nothing to export): {0}" -f $RegistryPath)
+            }
         }
     }
     catch {

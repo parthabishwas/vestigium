@@ -180,6 +180,24 @@ Automation and docs:
     the `.vestigium_robocopy_*` staging folders can no longer leak into the
     tree (which is what created the unreadable long paths in the first place).
 
+- Gaps found in the same live-run log, now closed:
+  - `$MFT` and `$LogFile` were never acquired on Windows 11: RawCopy64 is not
+    staged by `setup`, `esentutl /vss` fails on them (`-2403`), and NTFS refuses
+    a by-name open even on a snapshot (error 5). A built-in, read-only NTFS
+    parser now reads the shadow-copy device directly (the live volume if VSS is
+    unavailable), applies update-sequence fixups to read records, follows fragmented run lists
+    and `$ATTRIBUTE_LIST` extension records, and writes the raw on-disk bytes
+    MFTECmd expects. Also used for `-ScanDrives` volumes. Verified against
+    `ntfscat` on real `mkntfs` images, including a fragmented MFT.
+  - Files a running program holds without read sharing (a browser's
+    `Network\Cookies`) are queued and retried from one short-lived shadow copy
+    after all steps, so they are no longer lost.
+  - The shared-read copy uses `\\?\` paths, so shortcuts named after a whole URL
+    copy directly instead of failing over to robocopy.
+  - A registry key that does not exist (`Policies\Explorer\Run`, `RunServices`,
+    `Office` for a user without it) is logged as INFO "not present" instead of a
+    WARN, so the log and the findings gap count show real failures only.
+
 - The Windows collector now strips Mark-of-the-Web from its modules before
   dot-sourcing them, and `setup` unblocks the binaries it downloads. This stops
   the per-module PowerShell "Run only scripts that you trust" prompt that a

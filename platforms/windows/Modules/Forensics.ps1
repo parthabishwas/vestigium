@@ -280,6 +280,18 @@ function Invoke-DFIRVssAcquire {
     #     esentutl could not get. ---
     $shadow = New-DFIRShadowCopy -Context $Context
     if (-not $shadow) {
+        # No snapshot: parse the live volume device directly. Not point-in-time
+        # consistent (the MFT can change while it is read), but far better than
+        # no $MFT at all; the note below says so.
+        $liveVolume = '\\.\' + $liveDrive
+        if (-not $mftOk) {
+            $mftOk = Copy-DFIRNtfsRecordData -Context $Context -Volume $liveVolume -RecordNumber 0 -Destination $mftOut
+            if ($mftOk) { [void]$lines.Add('OK    $MFT acquired by raw NTFS parse of the LIVE volume (not snapshot-consistent)') }
+        }
+        if (-not $logOk) {
+            $logOk = Copy-DFIRNtfsRecordData -Context $Context -Volume $liveVolume -RecordNumber 2 -Destination $logOut
+            if ($logOk) { [void]$lines.Add('OK    $LogFile acquired by raw NTFS parse of the LIVE volume (not snapshot-consistent)') }
+        }
         [void]$lines.Add('Shadow copy: NOT AVAILABLE for hives (VSS creation failed - see the collection log).')
         [void]$lines.Add(('metadata: $MFT={0} $LogFile={1} raw-$UsnJrnl={2} fsutil-USN={3}' -f $mftOk, $logOk, $usnOk, $usnFsutilOk))
         if ($mftOk -or $usnOk -or $usnFsutilOk) { $Context['NtfsAcquired'] = $true }
@@ -290,9 +302,13 @@ function Invoke-DFIRVssAcquire {
     $device = $shadow.DeviceObject   # \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN
     [void]$lines.Add(('Shadow device: {0}' -f $device)); [void]$lines.Add('')
     try {
-        # Raw fallback (on our snapshot) for any metadata esentutl missed. This
-        # usually still fails - NTFS blocks opening $MFT by name even here - but
-        # it costs nothing to try.
+        # Built-in raw NTFS parse of the snapshot device: reads the boot sector
+        # and MFT records directly, so it is not blocked by the by-name open
+        # NTFS refuses, and the snapshot makes it point-in-time consistent.
+        if (-not $mftOk) { $mftOk = Copy-DFIRNtfsRecordData -Context $Context -Volume $device -RecordNumber 0 -Destination $mftOut }
+        if (-not $logOk) { $logOk = Copy-DFIRNtfsRecordData -Context $Context -Volume $device -RecordNumber 2 -Destination $logOut }
+        # Last resort: a by-name backup-semantics open on the snapshot. This
+        # usually fails - NTFS blocks opening $MFT by name even here.
         if (-not $mftOk) { $mftOk = Copy-DFIRRawFile   -Context $Context -Source ($device + '\$MFT')     -Destination $mftOut }
         if (-not $logOk) { $logOk = Copy-DFIRRawFile   -Context $Context -Source ($device + '\$LogFile') -Destination $logOut }
         if (-not $usnOk) { $usnOk = Copy-DFIRUsnJournal -Context $Context -Source ($device + '\$Extend\$UsnJrnl:$J') -Destination $usnOut }
@@ -457,15 +473,18 @@ function Invoke-DFIRScanDriveAcquire {
         [void]$lines.Add(('Generated: {0:o}' -f (Get-Date))); [void]$lines.Add('')
 
         $metas = @(
-            @{ Name = '$MFT';     Live = ($id + '\$MFT');     Out = (Join-Path $dest 'MFT') },
-            @{ Name = '$LogFile'; Live = ($id + '\$LogFile'); Out = (Join-Path $dest 'LogFile') }
+            @{ Name = '$MFT';     Live = ($id + '\$MFT');     Out = (Join-Path $dest 'MFT');     Record = 0 },
+            @{ Name = '$LogFile'; Live = ($id + '\$LogFile'); Out = (Join-Path $dest 'LogFile'); Record = 2 }
         )
         foreach ($m in $metas) {
             if (Copy-DFIREsentutlVss -Context $Context -Source $m.Live -Destination $m.Out) {
                 [void]$lines.Add(('OK    {0} -> {1}\{2} (esentutl /vss)' -f $m.Name, $letter, (Split-Path -Leaf $m.Out)))
             }
+            elseif (Copy-DFIRNtfsRecordData -Context $Context -Volume ('\\.\' + $id) -RecordNumber $m.Record -Destination $m.Out) {
+                [void]$lines.Add(('OK    {0} -> {1}\{2} (raw NTFS parse of the live volume)' -f $m.Name, $letter, (Split-Path -Leaf $m.Out)))
+            }
             else {
-                [void]$lines.Add(('FAIL  {0} (esentutl /vss copy failed)' -f $m.Name))
+                [void]$lines.Add(('FAIL  {0} (esentutl /vss and raw NTFS parse both failed)' -f $m.Name))
             }
         }
 

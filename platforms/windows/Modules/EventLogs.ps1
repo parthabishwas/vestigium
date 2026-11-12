@@ -81,10 +81,13 @@ function Invoke-DFIREventLogCollection {
             Add-DFIRCollectedFile -Context $Context -Path $csv
         }
         catch {
-            if ($_.Exception.Message -like '*No events were found*') {
+            # FullyQualifiedErrorId is language-neutral; the message text is
+            # localised, so matching only the English wording misreports an
+            # empty channel as a failure on non-English Windows.
+            if (($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') -or ($_.Exception.Message -like '*No events were found*')) {
                 @() | Export-Csv -Path $csv -NoTypeInformation -Encoding UTF8 -Force
                 Add-DFIRCollectedFile -Context $Context -Path $csv
-                Write-DFIRLog -Context $Context -Level WARN -Message ("No events found for {0}; wrote empty CSV" -f $logName)
+                Write-DFIRLog -Context $Context -Message ("No events found for {0}; wrote empty CSV" -f $logName)
             }
             else {
                 $success = $false

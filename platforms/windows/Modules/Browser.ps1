@@ -340,7 +340,7 @@ function Export-DFIRChromiumExtensions {
     )
 
     if (-not (Test-Path -LiteralPath $UserDataRoot)) {
-        Write-DFIRLog -Context $Context -Level WARN -Message ("{0} user-data path not found: {1}" -f $BrowserName, $UserDataRoot)
+        Write-DFIRLog -Context $Context -Message ("{0} user-data path not found: {1}" -f $BrowserName, $UserDataRoot)
         return $true
     }
 
@@ -415,7 +415,7 @@ function Export-DFIRFirefoxExtensions {
     )
 
     if (-not (Test-Path -LiteralPath $ProfilesRoot)) {
-        Write-DFIRLog -Context $Context -Level WARN -Message ("Firefox profiles path not found: {0}" -f $ProfilesRoot)
+        Write-DFIRLog -Context $Context -Message ("Firefox profiles path not found: {0}" -f $ProfilesRoot)
         return $true
     }
 

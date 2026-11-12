@@ -36,7 +36,7 @@ function Invoke-DFIRStartupCollection {
                 }
             }
             else {
-                Write-DFIRLog -Context $Context -Level WARN -Message ("Startup path not found: {0}" -f $location.Path)
+                Write-DFIRLog -Context $Context -Message ("Startup path not found: {0}" -f $location.Path)
             }
         }
         catch {

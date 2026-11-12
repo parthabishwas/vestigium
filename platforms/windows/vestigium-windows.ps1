@@ -371,9 +371,13 @@ function Start-DFIRCollector {
         }
 
         # Files a running program held without read sharing (browser Cookies and
-        # the like) are retried from one short-lived shadow copy. Not fatal.
-        try { [void](Invoke-DFIRLockedFileVssRetry -Context $context) }
-        catch { Write-DFIRLog -Context $context -Level WARN -Message ("Shadow-copy retry error: {0}" -f $_.Exception.Message) }
+        # the like) are retried from one short-lived shadow copy. Not fatal. Only
+        # when the Forensics step ran: that step is the one that uses VSS, so a
+        # narrower module selection never creates a shadow copy on the host.
+        if ($SelectedSteps -contains 'Forensics') {
+            try { [void](Invoke-DFIRLockedFileVssRetry -Context $context) }
+            catch { Write-DFIRLog -Context $context -Level WARN -Message ("Shadow-copy retry error: {0}" -f $_.Exception.Message) }
+        }
 
         Write-DFIRLog -Context $context -Message 'Finalizing collection metadata'
         if ($transcriptStarted) {

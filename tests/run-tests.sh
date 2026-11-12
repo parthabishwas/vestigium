@@ -498,12 +498,19 @@ fi
 # ntfscat on a real mkntfs image: $LogFile byte-identical; $MFT identical once
 # update-sequence fixups are applied (the reader keeps raw on-disk bytes, as
 # RawCopy/KAPE do, so MFTECmd can validate the fixups itself).
-if have pwsh && have mkntfs && have ntfscat && have python3; then
+if have pwsh && have mkntfs && have ntfscat && have ntfscp && have ntfsls && have python3; then
     nimg="$WORK/ntfs.raw"; truncate -s 32M "$nimg"
-    if mkntfs -F -Q -q -c 4096 "$nimg" >/dev/null 2>&1 \
-       && ntfscat -i 0 "$nimg" >"$WORK/t_mft" 2>/dev/null && ntfscat -i 2 "$nimg" >"$WORK/t_log" 2>/dev/null; then
+    if mkntfs -F -Q -q -c 4096 "$nimg" >/dev/null 2>&1; then
+        # Enough root entries to spill the directory index into INDX blocks, and
+        # a named stream to exercise path + stream resolution (the $UsnJrnl:$J path).
+        for i in $(seq 1 40); do printf '%s\n' "$i" >"$WORK/nf"; ntfscp -f -q "$nimg" "$WORK/nf" "/f_$i.txt" >/dev/null 2>&1; done
+        head -c 20000 /dev/urandom >"$WORK/t_ads"
+        ntfscp -f -q -N J "$nimg" "$WORK/t_ads" /f_7.txt >/dev/null 2>&1
+        want_rec="$(ntfsls -i "$nimg" 2>/dev/null | awk '$2=="f_33.txt"{print $1}')"
+    fi
+    if [[ -n "${want_rec:-}" ]] && ntfscat -i 0 "$nimg" >"$WORK/t_mft" 2>/dev/null && ntfscat -i 2 "$nimg" >"$WORK/t_log" 2>/dev/null; then
         cat >"$WORK/ntfstest.ps1" <<'PS1'
-param([string]$Kit, [string]$W)
+param([string]$Kit, [string]$W, [string]$WantRec)
 . (Join-Path $Kit 'platforms/windows/Modules/Utilities.ps1')
 function Write-DFIRLog { param($Context, $Level, $Message) }
 if (-not (Add-DFIRNtfsReaderType -Context @{})) { 'compile-failed'; exit }
@@ -513,9 +520,16 @@ foreach ($p in @(@(0, 'g_mft'), @(2, 'g_log'))) {
 }
 $r = [Vestigium.NtfsReader]::Extract((Join-Path $W 't_log'), 0, '', (Join-Path $W 'g_x'), 0)
 if ($r.Error -ne 'volume is not NTFS') { 'non-NTFS not rejected'; exit }
+$img = Join-Path $W 'ntfs.raw'
+if ([Vestigium.NtfsReader]::ResolvePath($img, 'f_33.txt') -ne [long]$WantRec) { 'index lookup wrong'; exit }
+if ([Vestigium.NtfsReader]::ResolvePath($img, '$Extend\$Quota') -lt 16) { '$Extend lookup failed'; exit }
+if ([Vestigium.NtfsReader]::ResolvePath($img, '$Extend\$UsnJrnl') -ne -1) { 'absent path resolved'; exit }
+$r = [Vestigium.NtfsReader]::ExtractByPath($img, 'f_7.txt', 'J', (Join-Path $W 'g_ads'), 0, $true)
+if ($r.Error) { 'named stream: ' + $r.Error; exit }
+if ((Get-FileHash (Join-Path $W 'g_ads')).Hash -ne (Get-FileHash (Join-Path $W 't_ads')).Hash) { 'named stream content differs'; exit }
 'ok'
 PS1
-        nres="$(pwsh -NoProfile -File "$WORK/ntfstest.ps1" "$KIT" "$WORK" 2>&1 | tail -n 1)"
+        nres="$(pwsh -NoProfile -File "$WORK/ntfstest.ps1" "$KIT" "$WORK" "$want_rec" 2>&1 | tail -n 1)"
         if [[ "$nres" == ok ]]; then
             ncmp="$(python3 - "$WORK" <<'PY'
 import struct, sys, os
@@ -534,7 +548,7 @@ ok = bytes(g) == t and open(os.path.join(w, 'g_log'), 'rb').read() == open(os.pa
 print('ok' if ok else 'content-mismatch')
 PY
 )"
-            if [[ "$ncmp" == ok ]]; then pass "NTFS reader: \$MFT and \$LogFile match ntfscat"
+            if [[ "$ncmp" == ok ]]; then pass "NTFS reader: \$MFT/\$LogFile match ntfscat; index lookup and named streams"
             else fail "NTFS reader output differs from ntfscat: $ncmp"; fi
         else
             fail "NTFS reader: $nres"

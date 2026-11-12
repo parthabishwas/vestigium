@@ -292,6 +292,10 @@ function Invoke-DFIRVssAcquire {
             $logOk = Copy-DFIRNtfsRecordData -Context $Context -Volume $liveVolume -RecordNumber 2 -Destination $logOut
             if ($logOk) { [void]$lines.Add('OK    $LogFile acquired by raw NTFS parse of the LIVE volume (not snapshot-consistent)') }
         }
+        if (-not $usnOk) {
+            $usnOk = Copy-DFIRNtfsUsnJournal -Context $Context -Volume $liveVolume -Destination $usnOut
+            if ($usnOk) { [void]$lines.Add(('OK    $UsnJrnl:$J by raw NTFS parse of the LIVE volume (leading sparse {0} bytes trimmed)' -f $Context['UsnLeadingSparseSkipped'])) }
+        }
         [void]$lines.Add('Shadow copy: NOT AVAILABLE for hives (VSS creation failed - see the collection log).')
         [void]$lines.Add(('metadata: $MFT={0} $LogFile={1} raw-$UsnJrnl={2} fsutil-USN={3}' -f $mftOk, $logOk, $usnOk, $usnFsutilOk))
         if ($mftOk -or $usnOk -or $usnFsutilOk) { $Context['NtfsAcquired'] = $true }
@@ -307,6 +311,10 @@ function Invoke-DFIRVssAcquire {
         # NTFS refuses, and the snapshot makes it point-in-time consistent.
         if (-not $mftOk) { $mftOk = Copy-DFIRNtfsRecordData -Context $Context -Volume $device -RecordNumber 0 -Destination $mftOut }
         if (-not $logOk) { $logOk = Copy-DFIRNtfsRecordData -Context $Context -Volume $device -RecordNumber 2 -Destination $logOut }
+        if (-not $usnOk) {
+            $usnOk = Copy-DFIRNtfsUsnJournal -Context $Context -Volume $device -Destination $usnOut
+            if ($usnOk) { [void]$lines.Add(('NOTE  raw $J: leading sparse region trimmed ({0} bytes); USN records keep their own offsets' -f $Context['UsnLeadingSparseSkipped'])) }
+        }
         # Last resort: a by-name backup-semantics open on the snapshot. This
         # usually fails - NTFS blocks opening $MFT by name even here.
         if (-not $mftOk) { $mftOk = Copy-DFIRRawFile   -Context $Context -Source ($device + '\$MFT')     -Destination $mftOut }
@@ -492,6 +500,9 @@ function Invoke-DFIRScanDriveAcquire {
         $usnOut = Join-Path $dest 'UsnJrnl_J'
         if (Copy-DFIREsentutlVss -Context $Context -Source $usnLive -Destination $usnOut) {
             [void]$lines.Add(('OK    $UsnJrnl:$J -> {0}\UsnJrnl_J (esentutl /vss)' -f $letter))
+        }
+        elseif (Copy-DFIRNtfsUsnJournal -Context $Context -Volume ('\\.\' + $id) -Destination $usnOut) {
+            [void]$lines.Add(('OK    $UsnJrnl:$J -> {0}\UsnJrnl_J (raw NTFS parse of the live volume, leading sparse {1} bytes trimmed)' -f $letter, $Context['UsnLeadingSparseSkipped']))
         }
         else {
             [void]$lines.Add('FAIL  $UsnJrnl:$J raw copy unavailable; using fsutil read only')

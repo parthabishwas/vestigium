@@ -1331,6 +1331,7 @@ namespace Vestigium {
         public bool Truncated;
         public bool Gaps;
         public int Runs;
+        public long LeadingSparseSkipped;
         public string Error;
     }
 
@@ -1389,9 +1390,11 @@ namespace Vestigium {
             return outBuf;
         }
 
-        static void ApplyFixups(byte[] rec, int recordSize) {
-            if (rec[0] != (byte)'F' || rec[1] != (byte)'I' || rec[2] != (byte)'L' || rec[3] != (byte)'E') {
-                throw new InvalidDataException("not a FILE record");
+        static void ApplyFixups(byte[] rec, int recordSize) { ApplyFixups(rec, recordSize, "FILE"); }
+
+        static void ApplyFixups(byte[] rec, int recordSize, string signature) {
+            if (Encoding.ASCII.GetString(rec, 0, 4) != signature) {
+                throw new InvalidDataException("not a " + signature + " record");
             }
             int usaOff = BitConverter.ToUInt16(rec, 4);
             int usaCount = BitConverter.ToUInt16(rec, 6);
@@ -1527,6 +1530,100 @@ namespace Vestigium {
             return data;
         }
 
+        // Scans the index entries under one INDEX_HEADER for a file name.
+        static long ScanIndexEntries(byte[] buf, int hdr, string name) {
+            int p = hdr + (int)BitConverter.ToUInt32(buf, hdr);
+            int end = Math.Min(hdr + (int)BitConverter.ToUInt32(buf, hdr + 4), buf.Length);
+            while (p + 16 <= end) {
+                int elen = BitConverter.ToUInt16(buf, p + 8);
+                int klen = BitConverter.ToUInt16(buf, p + 10);
+                int flags = BitConverter.ToUInt16(buf, p + 12);
+                if ((flags & 2) != 0 || elen < 16) { break; }
+                if (klen >= 0x42 && p + 16 + 0x42 <= end) {
+                    int nlen = buf[p + 16 + 0x40];
+                    if (p + 16 + 0x42 + nlen * 2 <= end) {
+                        string n = Encoding.Unicode.GetString(buf, p + 16 + 0x42, nlen * 2);
+                        if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) {
+                            return (long)(BitConverter.ToUInt64(buf, p) & 0x0000FFFFFFFFFFFFUL);
+                        }
+                    }
+                }
+                p += elen;
+            }
+            return -1;
+        }
+
+        // Finds `name` in directory record `dir` through its $I30 index: the
+        // resident INDEX_ROOT, then every INDX block of INDEX_ALLOCATION (a
+        // linear scan of all blocks, so no B-tree ordering is assumed).
+        static long FindChild(Volume v, long dir, string name) {
+            byte[] rec = ReadRecord(v, dir);
+            byte[] rootVal = null;
+            int blockSize = 0;
+            List<Run> allocRuns = null;
+            long allocSize = 0;
+            int a = BitConverter.ToUInt16(rec, 0x14);
+            while (a + 16 <= v.RecordSize) {
+                uint type = BitConverter.ToUInt32(rec, a);
+                if (type == 0xFFFFFFFF) { break; }
+                int alen = (int)BitConverter.ToUInt32(rec, a + 4);
+                if (alen <= 0 || a + alen > v.RecordSize) { break; }
+                if (AttrName(rec, a) == "$I30") {
+                    if (type == 0x90 && rec[a + 8] == 0) {
+                        int vlen = (int)BitConverter.ToUInt32(rec, a + 0x10);
+                        int voff = BitConverter.ToUInt16(rec, a + 0x14);
+                        rootVal = new byte[vlen];
+                        Buffer.BlockCopy(rec, a + voff, rootVal, 0, vlen);
+                        blockSize = (int)BitConverter.ToUInt32(rootVal, 8);
+                    } else if (type == 0xA0 && rec[a + 8] != 0) {
+                        allocSize = BitConverter.ToInt64(rec, a + 0x30);
+                        allocRuns = DecodeRuns(rec, a + BitConverter.ToUInt16(rec, a + 0x20), a + alen, 0);
+                    }
+                }
+                a += alen;
+            }
+            if (rootVal == null) { throw new InvalidDataException("record " + dir + " is not a directory"); }
+            long found = ScanIndexEntries(rootVal, 0x10, name);
+            if (found >= 0 || allocRuns == null || blockSize < 512) { return found; }
+            byte[] alloc = ReadRuns(v, allocRuns, allocSize);
+            byte[] block = new byte[blockSize];
+            for (int off = 0; off + blockSize <= alloc.Length; off += blockSize) {
+                if (alloc[off] != (byte)'I' || alloc[off + 1] != (byte)'N' || alloc[off + 2] != (byte)'D' || alloc[off + 3] != (byte)'X') { continue; }
+                Buffer.BlockCopy(alloc, off, block, 0, blockSize);
+                try { ApplyFixups(block, blockSize, "INDX"); } catch (InvalidDataException) { continue; }
+                found = ScanIndexEntries(block, 0x18, name);
+                if (found >= 0) { return found; }
+            }
+            return -1;
+        }
+
+        // Resolves a backslash-separated path (e.g. "$Extend\\$UsnJrnl") from the
+        // root directory (record 5) to an MFT record number; -1 when absent.
+        public static long ResolvePath(string device, string path) {
+            Volume v = OpenVolume(device);
+            try {
+                long rec = 5;
+                foreach (string part in path.Split(new char[] { '\\' }, StringSplitOptions.RemoveEmptyEntries)) {
+                    rec = FindChild(v, rec, part);
+                    if (rec < 0) { return -1; }
+                }
+                return rec;
+            } finally {
+                Close(v);
+            }
+        }
+
+        // Path-based extraction; used for \$Extend\$UsnJrnl:$J, whose record
+        // number differs per volume.
+        public static NtfsExtractResult ExtractByPath(string device, string path, string streamName, string destination, long maxBytes, bool trimLeadingSparse) {
+            NtfsExtractResult result;
+            long record;
+            try { record = ResolvePath(device, path); }
+            catch (Exception ex) { result = new NtfsExtractResult(); result.Error = ex.Message; return result; }
+            if (record < 0) { result = new NtfsExtractResult(); result.Error = path + " not found on the volume"; return result; }
+            return Extract(device, record, streamName, destination, maxBytes, trimLeadingSparse);
+        }
+
         static void Close(Volume v) {
             if (v == null) { return; }
             if (v.Handle != null) { v.Handle.Dispose(); }
@@ -1547,6 +1644,11 @@ namespace Vestigium {
             byte[] boot = ReadAligned(v, 0, 512);
             if (Encoding.ASCII.GetString(boot, 3, 4) != "NTFS") {
                 Close(v);
+                // A locked BitLocker volume reads back its own (encrypted) boot
+                // sector with this OEM ID; an unlocked one reads as plain NTFS.
+                if (Encoding.ASCII.GetString(boot, 3, 8) == "-FVE-FS-") {
+                    throw new InvalidDataException("volume is BitLocker-encrypted and locked (unlock it to acquire)");
+                }
                 throw new InvalidDataException("volume is not NTFS");
             }
             long bps = BitConverter.ToUInt16(boot, 0x0B);
@@ -1573,6 +1675,13 @@ namespace Vestigium {
         // from `device` (a volume device path, or an NTFS image file) into
         // `destination`. Never throws; failures land in Error.
         public static NtfsExtractResult Extract(string device, long record, string streamName, string destination, long maxBytes) {
+            return Extract(device, record, streamName, destination, maxBytes, false);
+        }
+
+        // trimLeadingSparse: skip the sparse prefix of a stream such as
+        // $UsnJrnl:$J (logically many GB, physically only the recent tail), as
+        // KAPE does; USN records carry their own offsets, so parsers still work.
+        public static NtfsExtractResult Extract(string device, long record, string streamName, string destination, long maxBytes, bool trimLeadingSparse) {
             NtfsExtractResult result = new NtfsExtractResult();
             Volume v = null;
             try {
@@ -1620,13 +1729,27 @@ namespace Vestigium {
                         result.Written = resident.Length;
                         return result;
                     }
-                    long limit = size;
-                    if (maxBytes > 0 && limit > maxBytes) { limit = maxBytes; result.Truncated = true; }
                     long expectedVcn = 0;
+                    int startIdx = 0;
+                    if (trimLeadingSparse) {
+                        while (startIdx < runs.Count && runs[startIdx].Sparse && runs[startIdx].Vcn == expectedVcn) {
+                            result.LeadingSparseSkipped += runs[startIdx].Length * v.ClusterSize;
+                            expectedVcn += runs[startIdx].Length;
+                            startIdx++;
+                        }
+                        if (result.LeadingSparseSkipped > size) { result.LeadingSparseSkipped = size; }
+                    }
+                    long limit = size - result.LeadingSparseSkipped;
+                    if (maxBytes > 0 && limit > maxBytes) { limit = maxBytes; result.Truncated = true; }
+                    if (limit <= 0) { result.Error = "stream holds no allocated data"; return result; }
                     const int Chunk = 4 * 1024 * 1024;
                     byte[] zeros = new byte[Chunk];
-                    foreach (Run r in runs) {
+                    for (int ri = startIdx; ri < runs.Count; ri++) {
+                        Run r = runs[ri];
                         if (result.Written >= limit) { break; }
+                        // Overlapping/duplicate extent (corrupt or repeated
+                        // attribute-list entry): never write the same VCNs twice.
+                        if (r.Vcn < expectedVcn) { continue; }
                         if (r.Vcn > expectedVcn) {
                             // Missing extent: keep offsets right, flag it.
                             long gap = Math.Min((r.Vcn - expectedVcn) * v.ClusterSize, limit - result.Written);
@@ -1713,6 +1836,51 @@ function Copy-DFIRNtfsRecordData {
     Write-DFIRLog -Context $Context -Level $level -Message ("NTFS raw parse: record {0} from {1} -> {2} ({3} of {4} bytes, {5} run(s)){6}" -f $RecordNumber, $Volume, $Destination, $r.Written, $r.Size, $r.Runs, $note)
     Add-DFIRCollectedFile -Context $Context -Path $Destination
     Add-DFIRProvenance -Context $Context -Source ('{0}\[MFT record {1}]' -f $Volume, $RecordNumber) -Destination $Destination -Snapshot $null -CopyMethod 'NtfsRawParse'
+    return $true
+}
+
+function Copy-DFIRNtfsUsnJournal {
+<#
+.SYNOPSIS
+    Extracts the raw $UsnJrnl:$J stream by resolving \$Extend\$UsnJrnl through
+    the directory index and copying its $J stream, leading sparse region trimmed.
+.DESCRIPTION
+    $J is logically huge (the USN offset space) but only its tail is allocated;
+    the sparse prefix is skipped (as KAPE does) so no gigabytes of zeros are
+    written. The number of bytes skipped is logged and recorded in the
+    acquisition note so an analyst can restore absolute offsets if needed.
+.OUTPUTS
+    System.Boolean
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][hashtable]$Context,
+        [Parameter(Mandatory=$true)][string]$Volume,
+        [Parameter(Mandatory=$true)][string]$Destination,
+        [long]$MaxBytes = 8589934592
+    )
+
+    if (-not (Add-DFIRNtfsReaderType -Context $Context)) { return $false }
+    $parent = Split-Path -Parent $Destination
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        try { New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null } catch { return $false }
+    }
+    $r = [Vestigium.NtfsReader]::ExtractByPath($Volume, '$Extend\$UsnJrnl', '$J', $Destination, $MaxBytes, $true)
+    if ($r.Error -or $r.Written -le 0) {
+        $why = $r.Error
+        if (-not $why) { $why = 'no data written' }
+        Write-DFIRLog -Context $Context -Level WARN -Message ("NTFS raw parse of `$UsnJrnl:`$J on {0} failed: {1}" -f $Volume, $why)
+        if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue }
+        return $false
+    }
+    $level = 'INFO'
+    $note = ''
+    if ($r.Truncated) { $level = 'WARN'; $note = ' TRUNCATED at the size cap;' }
+    if ($r.Gaps) { $level = 'WARN'; $note += ' some extents unreadable (zero-filled);' }
+    Write-DFIRLog -Context $Context -Level $level -Message ("NTFS raw parse: `$UsnJrnl:`$J from {0} -> {1} ({2} bytes; leading sparse {3} bytes skipped; logical size {4}){5}" -f $Volume, $Destination, $r.Written, $r.LeadingSparseSkipped, $r.Size, $note)
+    $Context['UsnLeadingSparseSkipped'] = $r.LeadingSparseSkipped
+    Add-DFIRCollectedFile -Context $Context -Path $Destination
+    Add-DFIRProvenance -Context $Context -Source ('{0}\$Extend\$UsnJrnl:$J' -f $Volume) -Destination $Destination -Snapshot $null -CopyMethod 'NtfsRawParse'
     return $true
 }
 

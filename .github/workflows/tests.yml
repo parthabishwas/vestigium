@@ -67,3 +67,34 @@ jobs:
           $zip = Get-ChildItem "$env:RUNNER_TEMP\evidence" -Filter *.zip | Select-Object -First 1
           .\vestigium.ps1 verify $zip.FullName
           exit $LASTEXITCODE
+      - name: Assert key artifacts were acquired
+        shell: powershell
+        run: |
+          # A green collection can still have silently lost an artifact (warnings
+          # do not fail the run), so check the ones that have regressed before.
+          $root = Get-ChildItem "$env:RUNNER_TEMP\evidence" -Directory | Select-Object -First 1
+          $log = Join-Path $root.FullName '14_Logs\Collection.log'
+          Get-Content -LiteralPath $log | Select-String '\[(WARN|ERROR)\]' | ForEach-Object { $_.Line }
+          $bad = 0
+          foreach ($name in @('MFT', 'LogFile')) {
+            $p = Join-Path $root.FullName ('21_FileSystem\' + $name)
+            if (-not (Test-Path -LiteralPath $p)) { Write-Host "::error::$name not acquired"; $bad++; continue }
+            $buf = New-Object byte[] 4
+            $fs = [System.IO.File]::OpenRead($p); [void]$fs.Read($buf, 0, 4); $fs.Dispose()
+            $head = [System.Text.Encoding]::ASCII.GetString($buf)
+            $want = if ($name -eq 'MFT') { 'FILE' } else { 'RSTR' }
+            if ($head -ne $want) { Write-Host "::error::$name does not start with $want (got '$head')"; $bad++ }
+            else { Write-Host ("{0}: {1:n0} bytes, signature {2}" -f $name, (Get-Item -LiteralPath $p).Length, $head) }
+          }
+          foreach ($f in @('findings.json', '15_Hashes\SHA256.csv', '16_Manifest\Manifest.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $root.FullName $f))) { Write-Host "::error::$f missing"; $bad++ }
+          }
+          if (Select-String -LiteralPath $log -Pattern '\[ERROR\] Compression failed' -Quiet) { Write-Host '::error::archive failed'; $bad++ }
+          exit $bad
+      - name: Upload the collection log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-collection-log
+          path: ${{ runner.temp }}\evidence\*\14_Logs\Collection.log
+          if-no-files-found: ignore
